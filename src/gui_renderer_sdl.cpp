@@ -6,8 +6,11 @@
 #include <SDL.h>
 #include <backends/imgui_impl_sdlrenderer2.h>
 
+#include "miniz.h"
+
 #include <algorithm>
 #include <cstdint>
+#include <fstream>
 
 #pragma GCC diagnostic push // third-party: silence warnings about the parts not used
 #pragma GCC diagnostic ignored "-Wunused-function"
@@ -39,6 +42,19 @@ void Renderer::render() {
                            static_cast<Uint8>(background.z * 255), 255);
     SDL_RenderClear(renderer_);
     ImGui_ImplSDLRenderer2_RenderDrawData(ImGui::GetDrawData(), renderer_);
+    if (!capture_.empty()) {
+        int width{}, height{};
+        SDL_GetRendererOutputSize(renderer_, &width, &height);
+        std::vector<unsigned char> rgba(static_cast<std::size_t>(width) * height * 4);
+        if (SDL_RenderReadPixels(renderer_, nullptr, SDL_PIXELFORMAT_ABGR8888, rgba.data(), width * 4) == 0) {
+            std::size_t length = 0;
+            if (void* png = tdefl_write_image_to_png_file_in_memory_ex(rgba.data(), width, height, 4, &length, 6, MZ_FALSE)) {
+                std::ofstream(capture_, std::ios::binary).write(static_cast<const char*>(png), static_cast<std::streamsize>(length));
+                mz_free(png);
+            }
+        }
+        capture_.clear();
+    }
     SDL_RenderPresent(renderer_);
 }
 

@@ -40,6 +40,14 @@ cmake --build build -j
 ctest --test-dir build --output-on-failure
 ```
 
+To look at the GUI without a screen (CI, scripts, review), `RSMP_CAPTURE=shot.png` saves a frame and
+exits, and `--gui <songs or a mod folder>` fills it first:
+
+```sh
+RSMP_CAPTURE=songs.png build/ReSkateMusicPacker --gui ~/Music/*.mp3
+RSMP_CAPTURE=export.png RSMP_CAPTURE_OPEN=export build/ReSkateMusicPacker --gui "<game>/Mods/MyMix"
+```
+
 The extra `cas_codec_tests` check the Oodle path there: Kraken, Selkie and Leviathan blocks (made
 from this repository's `LICENSE`, in `test/fixtures/`) decode through `decode_cas()` and ooz.
 

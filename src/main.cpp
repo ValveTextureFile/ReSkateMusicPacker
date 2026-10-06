@@ -30,6 +30,7 @@
 #include <array>
 #include <atomic>
 #include <cctype>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -60,6 +61,143 @@ constexpr const char* bitrates[]{"128", "160", "192", "256", "320"};
 
 float g_scale = 1.0f;
 inline float S(float value) { return value * g_scale; }
+
+// ---- Look and feel: the palette and small widgets the pages share ----------------------------------
+namespace ui {
+const ImVec4 accent(0.22f, 0.58f, 0.98f, 1.00f);
+const ImVec4 accent_hover(0.30f, 0.65f, 1.00f, 1.00f);
+const ImVec4 accent_active(0.16f, 0.48f, 0.86f, 1.00f);
+const ImVec4 danger(0.93f, 0.36f, 0.33f, 1.00f);
+const ImVec4 success(0.40f, 0.85f, 0.52f, 1.00f);
+const ImVec4 warning(1.00f, 0.70f, 0.30f, 1.00f);
+const ImVec4 muted(0.50f, 0.54f, 0.60f, 1.00f);
+const ImVec4 panel(0.135f, 0.145f, 0.175f, 1.00f);
+const ImVec4 transparent(0, 0, 0, 0);
+
+ImFont* heading_font = nullptr; // set by run_gui when a bold face is available
+
+void heading(const char* text) {
+    if (heading_font) ImGui::PushFont(heading_font);
+    ImGui::TextUnformatted(text);
+    if (heading_font) ImGui::PopFont();
+}
+// A small upper-case label over a group of controls.
+void section(const char* text) {
+    ImGui::Dummy(ImVec2(0, S(4)));
+    ImGui::PushStyleColor(ImGuiCol_Text, muted);
+    ImGui::TextUnformatted(text);
+    ImGui::PopStyleColor();
+}
+bool primary_button(const char* label, ImVec2 size = {}) {
+    ImGui::PushStyleColor(ImGuiCol_Button, accent_active);
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, accent_hover);
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, accent);
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1, 1, 1, 1));
+    const bool clicked = ImGui::Button(label, size);
+    ImGui::PopStyleColor(4);
+    return clicked;
+}
+// A borderless button that only shows its background on hover (row actions, icons).
+bool ghost_button(const char* label, ImVec2 size = {}, const ImVec4* hover = nullptr) {
+    ImGui::PushStyleColor(ImGuiCol_Button, transparent);
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, hover ? *hover : ImGui::GetStyleColorVec4(ImGuiCol_ButtonHovered));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
+    // Shorter than a frame (header buttons): drop the vertical padding so the label isn't clipped.
+    const bool short_button = size.y > 0 && size.y < ImGui::GetFrameHeight();
+    if (short_button) ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(ImGui::GetStyle().FramePadding.x, 0));
+    const bool clicked = ImGui::Button(label, size);
+    if (short_button) ImGui::PopStyleVar();
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor(2);
+    return clicked;
+}
+void status_text(const std::string& text, bool error) {
+    ImGui::TextColored(error ? danger : success, "%s", text.c_str());
+}
+// "3:07", or "1:02:03" past an hour.
+std::string duration(double seconds) {
+    const int total = static_cast<int>(seconds);
+    char text[32];
+    if (total >= 3600) std::snprintf(text, sizeof(text), "%d:%02d:%02d", total / 3600, total / 60 % 60, total % 60);
+    else std::snprintf(text, sizeof(text), "%d:%02d", total / 60, total % 60);
+    return text;
+}
+// Shortens text to `width` by cutting the middle, so both ends of a path stay readable.
+std::string fit_middle(const std::string& text, float width) {
+    if (ImGui::CalcTextSize(text.c_str()).x <= width) return text;
+    std::size_t keep = text.size();
+    while (keep > 4) {
+        keep -= 1;
+        const auto candidate = text.substr(0, keep / 2) + "..." + text.substr(text.size() - (keep - keep / 2));
+        if (ImGui::CalcTextSize(candidate.c_str()).x <= width) return candidate;
+    }
+    return "...";
+}
+// Shortens text to `width` by cutting its end ("needs an art...").
+std::string fit_end(const std::string& text, float width) {
+    if (ImGui::CalcTextSize(text.c_str()).x <= width) return text;
+    for (std::size_t keep = text.size(); keep > 0; --keep) {
+        const auto candidate = text.substr(0, keep) + "...";
+        if (ImGui::CalcTextSize(candidate.c_str()).x <= width) return candidate;
+    }
+    return "...";
+}
+// A rounded panel centred in the space left, for the first-run pages and the empty song list.
+bool begin_card(const char* id, ImVec2 size) {
+    const ImVec2 avail = ImGui::GetContentRegionAvail();
+    size.x = std::min(size.x, avail.x - S(32));
+    size.y = std::min(size.y, avail.y - S(16));
+    ImGui::SetCursorPos(ImVec2(ImGui::GetCursorPosX() + std::max(0.0f, (avail.x - size.x) * 0.5f),
+                               ImGui::GetCursorPosY() + std::max(0.0f, (avail.y - size.y) * 0.45f)));
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, panel);
+    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.25f, 0.30f, 0.40f, 0.70f));
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, S(14.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(S(32.0f), S(26.0f)));
+    return ImGui::BeginChild(id, size, ImGuiChildFlags_Borders | ImGuiChildFlags_AlwaysUseWindowPadding,
+                             ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+}
+void end_card() {
+    ImGui::EndChild();
+    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor(2);
+}
+// "(1) Game folder -- (2) ffmpeg -- (3) Songs", done steps ticked, the current one in the accent colour.
+void steps(int current) {
+    const char* names[]{"Game folder", "ffmpeg", "Songs"};
+    auto* draw = ImGui::GetWindowDrawList();
+    const float radius = S(11.0f);
+    for (int i = 0; i < 3; ++i) {
+        if (i) {
+            ImGui::SameLine(0, S(10));
+            const ImVec2 at = ImGui::GetCursorScreenPos();
+            const float y = at.y + radius;
+            draw->AddLine(ImVec2(at.x, y), ImVec2(at.x + S(28), y), ImGui::GetColorU32(muted), S(1.5f));
+            ImGui::Dummy(ImVec2(S(28), radius * 2));
+            ImGui::SameLine(0, S(10));
+        }
+        const ImVec2 at = ImGui::GetCursorScreenPos();
+        const ImVec2 centre(at.x + radius, at.y + radius);
+        const bool done = i < current, now = i == current;
+        if (done || now) draw->AddCircleFilled(centre, radius, ImGui::GetColorU32(done ? success : accent));
+        else draw->AddCircle(centre, radius, ImGui::GetColorU32(muted), 0, S(1.5f));
+        if (done) { // a tick
+            draw->AddPolyline(std::array<ImVec2, 3>{ImVec2(centre.x - radius * 0.45f, centre.y),
+                                                    ImVec2(centre.x - radius * 0.1f, centre.y + radius * 0.35f),
+                                                    ImVec2(centre.x + radius * 0.45f, centre.y - radius * 0.35f)}.data(),
+                              3, IM_COL32_WHITE, 0, S(2.0f));
+        } else {
+            const char digit[2]{static_cast<char>('1' + i), 0};
+            const ImVec2 size = ImGui::CalcTextSize(digit);
+            draw->AddText(ImVec2(centre.x - size.x * 0.5f, centre.y - size.y * 0.5f),
+                          now ? IM_COL32_WHITE : ImGui::GetColorU32(muted), digit);
+        }
+        ImGui::Dummy(ImVec2(radius * 2, radius * 2));
+        ImGui::SameLine(0, S(8));
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextColored(now ? ImGui::GetStyleColorVec4(ImGuiCol_Text) : muted, "%s", names[i]);
+    }
+}
+} // namespace ui
 
 std::string lower(std::string_view text) {
     std::string out;
@@ -120,7 +258,17 @@ bool find_ffmpeg(const fs::path& extra) {
     return platform::on_path("ffmpeg") && platform::on_path("ffprobe");
 }
 
-bool game_running() { return platform::process_running("Skate.exe"); }
+// Asked every frame by the status bar, so the process list is walked at most every two seconds.
+bool game_running() {
+    static auto checked = std::chrono::steady_clock::time_point{};
+    static bool running = false;
+    const auto now = std::chrono::steady_clock::now();
+    if (now - checked > std::chrono::seconds(2)) {
+        running = platform::process_running("Skate.exe");
+        checked = now;
+    }
+    return running;
+}
 
 #if defined(_WIN32)
 constexpr const char* file_manager = "File Explorer";
@@ -668,7 +816,7 @@ void build(App& app) {
 }
 
 // ---- Drawing -------------------------------------------------------------------------------------
-[[maybe_unused]] void apply_theme() { // defined upstream but not called
+void apply_theme() {
     auto& style = ImGui::GetStyle();
 
     style.WindowPadding     = ImVec2(S(16.0f), S(14.0f));
@@ -754,23 +902,49 @@ void build(App& app) {
     colors[ImGuiCol_ModalWindowDimBg]     = ImVec4(0.05f, 0.05f, 0.07f, 0.65f);
 }
 
+// Where the game usually is on this system, for the setup page.
+const char* game_folder_hint() {
+#if defined(_WIN32)
+    return "It's the folder with Skate.exe and ReSkateLauncher.exe, for example F:\\Games\\ReSkate-1.0.0.";
+#elif defined(__APPLE__)
+    return "It's the folder with Skate.exe and ReSkateLauncher.exe inside your CrossOver or Whisky bottle's drive_c.";
+#else
+    return "It's the folder with Skate.exe and ReSkateLauncher.exe: under Steam/Proton usually "
+           "~/.local/share/Steam/steamapps/common/<game>, or inside a Wine prefix's drive_c.";
+#endif
+}
+
+void card_status(const App& app) {
+    if (app.status.empty()) return;
+    ImGui::Spacing();
+    ui::status_text(app.status, app.status_error);
+}
+
 void setup_page(App& app, NativeWindow window) {
-    ImGui::Spacing();
-    ImGui::TextColored(ImVec4(0.22f, 0.65f, 1.0f, 1.0f), "Game Setup");
-    ImGui::Spacing();
-    ImGui::TextWrapped("Pick the folder skate. is installed in (the one with Skate.exe and ReSkateLauncher.exe).");
-    ImGui::Spacing();
-    if (ImGui::Button("Choose the game folder...", ImVec2(S(220), S(32)))) {
-        const auto folders = pick(window, true);
-        if (!folders.empty()) {
-            if (game_folder(folders[0])) {
-                app.settings.game = folders[0];
-                save_settings(app.settings);
-                refresh_external_songs(app);
-                set_status(app, "");
-            } else set_status(app, "That folder has no Skate.exe.", true);
+    if (ui::begin_card("setup", ImVec2(S(640), S(330)))) {
+        ui::steps(0);
+        ImGui::Dummy(ImVec2(0, S(14)));
+        ui::heading("Where is skate. installed?");
+        ImGui::Spacing();
+        ImGui::TextWrapped("The packer reads the game's own songs to build yours, so it needs the game folder first.");
+        ImGui::PushStyleColor(ImGuiCol_Text, ui::muted);
+        ImGui::TextWrapped("%s", game_folder_hint());
+        ImGui::PopStyleColor();
+        ImGui::Dummy(ImVec2(0, S(14)));
+        if (ui::primary_button("Choose the game folder...", ImVec2(S(240), S(38)))) {
+            const auto folders = pick(window, true);
+            if (!folders.empty()) {
+                if (game_folder(folders[0])) {
+                    app.settings.game = folders[0];
+                    save_settings(app.settings);
+                    refresh_external_songs(app);
+                    set_status(app, "");
+                } else set_status(app, "That folder has no Skate.exe.", true);
+            }
         }
+        card_status(app);
     }
+    ui::end_card();
 }
 
 // The one-click installer, shared by first-run setup and the Settings dialog. Downloading only ever
@@ -793,40 +967,45 @@ void ffmpeg_download_controls(App& app, float width) {
 }
 
 void ffmpeg_page(App& app, NativeWindow window) {
-    ImGui::Spacing();
-    ImGui::TextColored(ImVec4(0.22f, 0.65f, 1.0f, 1.0f), "FFmpeg Dependency Required");
-    ImGui::Spacing();
-    ImGui::TextWrapped("The music packer uses ffmpeg to read and encode songs, and cannot find %s. %s",
-                       ffmpeg_pair.c_str(), ffmpeg_install_hint());
-    ImGui::Spacing();
-    if (music::ffmpeg_download_supported()) {
-        ffmpeg_download_controls(app, S(300));
+    if (ui::begin_card("ffmpeg", ImVec2(S(660), S(380)))) {
+        ui::steps(1);
+        ImGui::Dummy(ImVec2(0, S(14)));
+        ui::heading("One more thing: ffmpeg");
         ImGui::Spacing();
-        ImGui::TextDisabled("- or install it yourself -");
-        ImGui::Spacing();
-    } else {
-        if (ImGui::Button("Check again", ImVec2(S(160), S(32)))) {
-            app.ffmpeg = find_ffmpeg(app.settings.ffmpeg);
-            set_status(app, app.ffmpeg ? "" : "Still no " + ffmpeg_pair + " on PATH.", !app.ffmpeg);
+        ImGui::TextWrapped("The packer uses ffmpeg to read and encode songs, and cannot find %s. %s",
+                           ffmpeg_pair.c_str(), ffmpeg_install_hint());
+        ImGui::Dummy(ImVec2(0, S(12)));
+        if (music::ffmpeg_download_supported()) {
+            ffmpeg_download_controls(app, S(300));
+            ImGui::Spacing();
+            ImGui::TextDisabled("- or install it yourself -");
+            ImGui::Spacing();
+        } else {
+            if (ui::primary_button("Check again", ImVec2(S(160), S(34)))) {
+                app.ffmpeg = find_ffmpeg(app.settings.ffmpeg);
+                set_status(app, app.ffmpeg ? "" : "Still no " + ffmpeg_pair + " on PATH.", !app.ffmpeg);
+            }
+            ImGui::SameLine();
         }
+        if (ImGui::Button("Open the ffmpeg download page", ImVec2(S(240), S(34))))
+            platform::open_url("https://ffmpeg.org/download.html");
         ImGui::SameLine();
-    }
-    if (ImGui::Button("Open the ffmpeg download page", ImVec2(S(240), S(32))))
-        platform::open_url("https://ffmpeg.org/download.html");
-    ImGui::SameLine();
-    if (ImGui::Button("Locate ffmpeg...", ImVec2(S(160), S(32)))) {
-        const auto folders = pick(window, true);
-        if (!folders.empty()) {
-            auto folder = folders[0];
-            if (!fs::exists(folder / program("ffmpeg")) && fs::exists(folder / L"bin" / program("ffmpeg"))) folder /= L"bin";
-            if (find_ffmpeg(folder)) {
-                app.settings.ffmpeg = folder;
-                save_settings(app.settings);
-                app.ffmpeg = true;
-                set_status(app, "");
-            } else set_status(app, "That folder has no " + ffmpeg_pair + ".", true);
+        if (ImGui::Button("Locate ffmpeg...", ImVec2(S(160), S(34)))) {
+            const auto folders = pick(window, true);
+            if (!folders.empty()) {
+                auto folder = folders[0];
+                if (!fs::exists(folder / program("ffmpeg")) && fs::exists(folder / L"bin" / program("ffmpeg"))) folder /= L"bin";
+                if (find_ffmpeg(folder)) {
+                    app.settings.ffmpeg = folder;
+                    save_settings(app.settings);
+                    app.ffmpeg = true;
+                    set_status(app, "");
+                } else set_status(app, "That folder has no " + ffmpeg_pair + ".", true);
+            }
         }
+        card_status(app);
     }
+    ui::end_card();
 }
 
 // Reconfigures the game folder and ffmpeg after first-run setup; reachable from any page.
@@ -911,229 +1090,24 @@ void songs_page(App& app, NativeWindow window) {
         app.active_playlist_filter.clear();
     }
 
-    std::string artBtnLabel;
-    std::string artTooltip;
-    if (unique_playlists.size() > 1) {
-        artBtnLabel = "Covers (" + std::to_string(unique_playlists.size()) + ")";
-        artTooltip = "Configure artwork for each of the " + std::to_string(unique_playlists.size()) + " playlists in this mod";
-    } else {
-        const std::string activePlaylist = app.playlist[0] ? app.playlist.data() : "";
-        artBtnLabel = "Cover: ";
-        if (activePlaylist.empty()) {
-            artBtnLabel += "Auto";
-            artTooltip = "Automatic cover: using first track's album art (or none). Enter playlist name to customize.";
-        } else if (const auto it = app.playlist_artwork.find(activePlaylist); it != app.playlist_artwork.end() && !it->second.empty()) {
-            const auto fname = narrow(it->second.filename().wstring());
-            artBtnLabel += (fname.size() > 10 ? fname.substr(0, 8) + ".." : fname);
-            artTooltip = "Custom cover image: " + narrow(it->second.wstring());
-        } else if (app.generated_playlist_artwork.contains(activePlaylist)) {
-            artBtnLabel += "Text";
-            artTooltip = "Generated text cover styled with playlist name";
-        } else {
-            artBtnLabel += "Auto";
-            artTooltip = "Automatic cover: using first track's album art (or none). Click to customize.";
-        }
+    // Per-song problems and what stops a build, for the Build button and the status bar.
+    std::vector<std::vector<std::string>> problems(app.rows.size());
+    std::size_t blocked = 0;
+    for (std::size_t i = 0; i < app.rows.size(); ++i) {
+        problems[i] = row_problems(app, i);
+        if (!problems[i].empty()) ++blocked;
     }
+    std::string block;
+    if (app.rows.empty()) block = "Add some songs to build a mod.";
+    else if (!music::usable_name(app.name.data())) block = "Give the mod a name.";
+    else if (!music::usable_name(app.playlist.data())) block = "Give the default playlist a name.";
+    else if (blocked) block = std::to_string(blocked) + (blocked == 1 ? " song needs" : " songs need") + " fixing (see Problems).";
+    else if (std::any_of(app.rows.begin(), app.rows.end(), [](const Row& r) { return !r.scanned; })) block = "Reading the songs...";
 
-    const auto& style = ImGui::GetStyle();
-    const float new_btn_w = ImGui::CalcTextSize("New Mod").x + style.FramePadding.x * 2.0f;
-    const float open_btn_w = ImGui::CalcTextSize("Open Mod...").x + style.FramePadding.x * 2.0f;
-    const float name_input_w = S(170.0f);
-    const float playlist_input_w = S(160.0f);
-    const float cover_btn_w = ImGui::CalcTextSize(artBtnLabel.c_str()).x + style.FramePadding.x * 2.0f;
-    const float bitrate_w = S(80.0f);
-    const float norm_w = ImGui::GetFrameHeight() + style.ItemInnerSpacing.x + ImGui::CalcTextSize("Normalize").x;
-    const float settings_btn_w = ImGui::CalcTextSize("Settings...").x + style.FramePadding.x * 2.0f;
-    const float group_gap = S(14.0f);
-
-    const float total_header_w = new_btn_w + style.ItemSpacing.x + open_btn_w
-        + group_gap + name_input_w + style.ItemSpacing.x + playlist_input_w + style.ItemSpacing.x + cover_btn_w
-        + group_gap + bitrate_w + style.ItemSpacing.x + norm_w + style.ItemSpacing.x + settings_btn_w;
-
-    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.13f, 0.14f, 0.18f, 0.95f));
-    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.22f, 0.26f, 0.33f, 0.80f));
-    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, S(8.0f));
-    ImGui::PushStyleVar(ImGuiStyleVar_ChildBorderSize, 1.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(S(12.0f), S(8.0f)));
-
-    if (ImGui::BeginChild("header_toolbar", ImVec2(0, S(74.0f)), true,
-                          ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
-        const float avail_w = ImGui::GetContentRegionAvail().x;
-        if (avail_w > total_header_w) {
-            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (avail_w - total_header_w) * 0.5f);
-        }
-
-        ImGui::BeginDisabled(busy);
-        if (ImGui::Button("New Mod", ImVec2(new_btn_w, 0))) {
-            if (has_unsaved_changes(app)) {
-                app.pending_action = App::PendingAction::NewMod;
-                app.show_confirm_discard_modal = true;
-            } else {
-                reset_mod(app);
-            }
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Open Mod...", ImVec2(open_btn_w, 0))) {
-            if (has_unsaved_changes(app)) {
-                app.pending_action = App::PendingAction::OpenMod;
-                app.show_confirm_discard_modal = true;
-            } else {
-                const auto folders = pick(window, true);
-                if (!folders.empty()) open_mod(app, folders[0]);
-            }
-        }
-        ImGui::SameLine(0, group_gap);
-        ImGui::SetNextItemWidth(name_input_w);
-        if (ImGui::InputTextWithHint("##name", "Mod name", app.name.data(), app.name.size()) && !app.output.empty() &&
-            app.output.parent_path() == app.settings.game / L"Mods")
-            app.output.clear(); // a renamed new mod goes to its new folder; an opened one stays where it is
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Mod name (used for the mod folder in Mods/)");
-
-        ImGui::SameLine();
-        ImGui::SetNextItemWidth(playlist_input_w);
-        ImGui::InputTextWithHint("##playlist", "Default playlist", app.playlist.data(), app.playlist.size());
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Default playlist name in skate. Songs use this unless overridden in the table below.");
-
-        ImGui::SameLine();
-        if (ImGui::Button(artBtnLabel.c_str(), ImVec2(cover_btn_w, 0))) {
-            ImGui::OpenPopup("PlaylistCoverPopup");
-        }
-        if (ImGui::IsItemHovered()) {
-            ImGui::BeginTooltip();
-            ImGui::TextUnformatted(artTooltip.c_str());
-            if (app.artwork_preview) {
-                ImGui::Spacing();
-                ImGui::Image(app.artwork_preview, ImVec2(S(120), S(120)));
-            }
-            ImGui::EndTooltip();
-        }
-
-        if (ImGui::BeginPopup("PlaylistCoverPopup")) {
-            static int selected_pl_idx = 0;
-            if (selected_pl_idx >= static_cast<int>(unique_playlists.size())) selected_pl_idx = 0;
-
-            bool selection_changed = false;
-            if (unique_playlists.size() > 1) {
-                std::vector<const char*> pl_ptrs;
-                for (const auto& n : unique_playlists) pl_ptrs.push_back(n.c_str());
-                ImGui::SetNextItemWidth(S(200));
-                if (ImGui::Combo("Playlist##cover_combo", &selected_pl_idx, pl_ptrs.data(), static_cast<int>(pl_ptrs.size()))) {
-                    selection_changed = true;
-                }
-                ImGui::Separator();
-            }
-
-            const auto pName = unique_playlists[selected_pl_idx];
-            const bool isDef = (pName == defaultPlaylistName);
-            ImGui::Text("Playlist: %s%s", pName.c_str(), isDef ? " (default)" : "");
-            ImGui::Separator();
-
-            if (app.playlist_artwork.contains(pName) && !app.playlist_artwork[pName].empty()) {
-                ImGui::Text("Active: %s", narrow(app.playlist_artwork[pName].filename().wstring()).c_str());
-            } else if (app.generated_playlist_artwork.contains(pName)) {
-                ImGui::TextUnformatted("Active: Generated text cover");
-            } else {
-                ImGui::TextUnformatted("Active: Automatic (from first track)");
-            }
-
-            const bool artwork_busy = busy || app.artwork_preview_loading;
-            if (selection_changed || (app.artwork_preview_label != pName && !artwork_busy)) {
-                request_playlist_preview(app, pName);
-            }
-
-            ImGui::Spacing();
-            if (app.artwork_preview_loading && app.artwork_preview_label == pName) {
-                ImGui::BeginChild("cover_preview_box", ImVec2(S(128), S(128)), true);
-                ImGui::TextDisabled("Loading preview...");
-                ImGui::EndChild();
-            } else if (app.artwork_preview && app.artwork_preview_label == pName) {
-                ImGui::Image(app.artwork_preview, ImVec2(S(128), S(128)));
-            } else {
-                ImGui::BeginChild("cover_preview_box", ImVec2(S(128), S(128)), true);
-                ImGui::Spacing();
-                ImGui::TextDisabled("No cover");
-                if (!app.artwork_preview_error.empty() && app.artwork_preview_label == pName) {
-                    ImGui::Spacing();
-                    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + S(110));
-                    ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.4f, 1.0f), "%s", app.artwork_preview_error.c_str());
-                    ImGui::PopTextWrapPos();
-                }
-                ImGui::EndChild();
-            }
-            ImGui::Spacing();
-
-            ImGui::BeginDisabled(artwork_busy);
-            if (ImGui::Button("Choose Image...")) {
-                const auto files = pick(window, false, true);
-                if (!files.empty()) {
-                    app.playlist_artwork[pName] = files[0];
-                    app.generated_playlist_artwork.erase(pName);
-                    request_playlist_preview(app, pName);
-                }
-            }
-
-            const bool isGen = app.generated_playlist_artwork.contains(pName);
-            if (ImGui::Button(isGen ? "Re-generate Text Cover" : "Generate Text Cover")) {
-                app.generated_playlist_artwork.insert(pName);
-                app.playlist_artwork[pName].clear();
-                request_playlist_preview(app, pName);
-            }
-
-            if (ImGui::Button("Use Automatic")) {
-                app.playlist_artwork[pName].clear();
-                app.generated_playlist_artwork.erase(pName);
-                request_playlist_preview(app, pName);
-            }
-
-            if (unique_playlists.size() > 1) {
-                ImGui::Spacing();
-                if (ImGui::Button("Generate Text for All Playlists")) {
-                    for (const auto& n : unique_playlists) {
-                        app.generated_playlist_artwork.insert(n);
-                        app.playlist_artwork[n].clear();
-                    }
-                    request_playlist_preview(app, pName);
-                }
-            }
-            ImGui::EndDisabled();
-
-            ImGui::Separator();
-            if (ImGui::Button("Manage Track Artwork...")) {
-                app.show_artwork_modal = true;
-                ImGui::CloseCurrentPopup();
-            }
-            ImGui::SameLine();
-            if (ImGui::Button("Close")) {
-                ImGui::CloseCurrentPopup();
-            }
-
-            ImGui::EndPopup();
-        }
-
-        ImGui::SameLine(0, group_gap);
-        ImGui::SetNextItemWidth(bitrate_w);
-        ImGui::Combo("##bitrate", &app.bitrate, bitrates, 5);
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Opus audio bitrate (kbps)");
-        ImGui::SameLine();
-        ImGui::Checkbox("Normalize", &app.normalize);
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Equalise track loudness using EBU R128 (-15 LUFS)");
-        ImGui::SameLine();
-        if (ImGui::Button("Settings...", ImVec2(settings_btn_w, 0))) app.settings_open = true;
-        ImGui::EndDisabled();
-
-        ImGui::Spacing();
-        const std::string builds_into = "Builds into: " + narrow(output_folder(app).wstring());
-        const float builds_into_w = ImGui::CalcTextSize(builds_into.c_str()).x;
-        if (avail_w > builds_into_w) {
-            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (avail_w - builds_into_w) * 0.5f);
-        }
-        ImGui::TextDisabled("%s", builds_into.c_str());
-    }
-    ImGui::EndChild();
-    ImGui::PopStyleVar(3);
-    ImGui::PopStyleColor(2);
-
-    ImGui::Spacing();
+    const auto assign_playlist = [&](Row& row, const std::string& name) {
+        if (name == defaultPlaylistName) row.playlist.fill(0);
+        else copy_text(row.playlist, name);
+    };
 
     if (app.show_artwork_modal) {
         ImGui::OpenPopup("Track and playlist artwork");
@@ -1285,266 +1259,397 @@ void songs_page(App& app, NativeWindow window) {
         ImGui::EndPopup();
     }
 
-    // The songs.
-    if (app.rows.empty()) {
-        const ImVec2 avail = ImGui::GetContentRegionAvail();
-        const float card_w = std::min(avail.x - S(48.0f), S(720.0f));
-        const float card_h = std::min(avail.y - S(20.0f), S(310.0f));
-        const float offset_x = std::max(0.0f, (avail.x - card_w) * 0.5f);
-        const float offset_y = std::max(0.0f, (avail.y - card_h) * 0.5f);
-        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + offset_x);
-        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + offset_y);
+    // ---- Sidebar: the mod, its playlists, the cover, audio settings and Build ----------------------
+    const auto& style = ImGui::GetStyle();
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ui::panel);
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, S(10.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(S(14.0f), S(12.0f)));
+    if (ImGui::BeginChild("sidebar", ImVec2(S(290.0f), 0), ImGuiChildFlags_AlwaysUseWindowPadding,
+                          ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
+        const float full = ImGui::GetContentRegionAvail().x;
+        const float half = (full - style.ItemSpacing.x) * 0.5f;
 
-        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.13f, 0.15f, 0.19f, 0.90f));
-        ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.25f, 0.31f, 0.42f, 0.75f));
-        ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, S(14.0f));
-        ImGui::PushStyleVar(ImGuiStyleVar_ChildBorderSize, 1.5f);
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(S(28.0f), S(20.0f)));
-
-        if (ImGui::BeginChild("empty_state_card", ImVec2(card_w, card_h), true,
-                              ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
-            auto center_text = [](const char* text, const ImVec4* color = nullptr) {
-                const float text_w = ImGui::CalcTextSize(text).x;
-                const float card_avail = ImGui::GetContentRegionAvail().x;
-                if (card_avail > text_w) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (card_avail - text_w) * 0.5f);
-                if (color) ImGui::TextColored(*color, "%s", text);
-                else ImGui::TextUnformatted(text);
-            };
-            auto center_text_disabled = [](const char* text) {
-                const float text_w = ImGui::CalcTextSize(text).x;
-                const float card_avail = ImGui::GetContentRegionAvail().x;
-                if (card_avail > text_w) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (card_avail - text_w) * 0.5f);
-                ImGui::TextDisabled("%s", text);
-            };
-
-            // Audio waveform equalizer graphic
-            const float icon_w = S(72.0f);
-            const float icon_h = S(42.0f);
-            const float card_avail = ImGui::GetContentRegionAvail().x;
-            if (card_avail > icon_w) {
-                ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (card_avail - icon_w) * 0.5f);
-            }
-            const ImVec2 p0 = ImGui::GetCursorScreenPos();
-            ImGui::Dummy(ImVec2(icon_w, icon_h));
-
-            ImDrawList* draw_list = ImGui::GetWindowDrawList();
-            const float heights[] = { 10.0f, 18.0f, 28.0f, 38.0f, 42.0f, 38.0f, 28.0f, 18.0f, 10.0f };
-            const float bar_w = S(4.5f);
-            const float bar_gap = S(3.8f);
-            const int bar_count = 9;
-            const float bars_total_w = bar_count * bar_w + (bar_count - 1) * bar_gap;
-            const float start_x = p0.x + (icon_w - bars_total_w) * 0.5f;
-            const float center_y = p0.y + icon_h * 0.5f;
-
-            for (int b = 0; b < bar_count; ++b) {
-                const float bh = heights[b] * (icon_h / 42.0f);
-                const float bx0 = start_x + static_cast<float>(b) * (bar_w + bar_gap);
-                const float by0 = center_y - bh * 0.5f;
-                const float bx1 = bx0 + bar_w;
-                const float by1 = center_y + bh * 0.5f;
-                const float t = 1.0f - std::abs(static_cast<float>(b) - 4.0f) / 5.0f;
-                const ImU32 col = ImGui::ColorConvertFloat4ToU32(ImVec4(
-                    0.18f + 0.14f * t,
-                    0.52f + 0.28f * t,
-                    0.92f + 0.08f * t,
-                    0.70f + 0.30f * t
-                ));
-                draw_list->AddRectFilled(ImVec2(bx0, by0), ImVec2(bx1, by1), col, S(2.5f));
-            }
-
-            ImGui::Dummy(ImVec2(0, S(8.0f)));
-            const ImVec4 title_col(0.96f, 0.97f, 1.0f, 1.0f);
-            center_text("Drop Audio Files or Folders Here", &title_col);
-            ImGui::Spacing();
-            center_text_disabled(("Drag and drop music directly from " + std::string(file_manager) + ", or browse below").c_str());
-            center_text_disabled("Supports MP3, FLAC, WAV, OGG, Opus, AAC, M4A, AIFF, and more");
-
-            ImGui::Dummy(ImVec2(0, S(16.0f)));
-
-            const float btn_w1 = S(165.0f);
-            const float btn_w2 = S(145.0f);
-            const float btn_spacing = S(14.0f);
-            const float total_btn_w = btn_w1 + btn_spacing + btn_w2;
-            if (card_avail > total_btn_w) {
-                ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (card_avail - total_btn_w) * 0.5f);
-            }
-
-            ImGui::BeginDisabled(busy);
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18f, 0.48f, 0.86f, 0.95f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.24f, 0.56f, 0.96f, 1.00f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.14f, 0.40f, 0.74f, 1.00f));
-            if (ImGui::Button("Browse Songs...", ImVec2(btn_w1, S(34.0f)))) {
-                add_files(app, pick(window, false));
-            }
-            ImGui::PopStyleColor(3);
-
-            ImGui::SameLine(0, btn_spacing);
-
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f, 0.24f, 0.30f, 0.95f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.27f, 0.32f, 0.40f, 1.00f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.16f, 0.20f, 0.25f, 1.00f));
-            if (ImGui::Button("Add Folder...", ImVec2(btn_w2, S(34.0f)))) {
-                add_files(app, pick(window, true));
-            }
-            ImGui::PopStyleColor(3);
-            ImGui::EndDisabled();
-
-            ImGui::Dummy(ImVec2(0, S(16.0f)));
-            center_text_disabled("Metadata and embedded album covers are detected automatically.");
-            center_text_disabled("You can customize playlists, track order, and artwork once tracks are added.");
+        ui::section("MOD");
+        const float settings_w = ImGui::CalcTextSize("Settings").x + style.FramePadding.x * 2;
+        ImGui::SameLine(full - settings_w + style.WindowPadding.x);
+        ImGui::SetCursorPosY(ImGui::GetCursorPosY() - S(1));
+        if (ui::ghost_button("Settings", ImVec2(settings_w, ImGui::GetTextLineHeight() + S(2)))) app.settings_open = true;
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Game folder and ffmpeg");
+        ImGui::SetNextItemWidth(-1);
+        ImGui::BeginDisabled(busy);
+        if (ImGui::InputTextWithHint("##name", "Mod name", app.name.data(), app.name.size()) && !app.output.empty() &&
+            app.output.parent_path() == app.settings.game / L"Mods")
+            app.output.clear(); // a renamed new mod goes to its new folder; an opened one stays where it is
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Mod name (used for the mod folder in Mods/)");
+        {
+            const auto where = narrow(output_folder(app).wstring());
+            ImGui::PushStyleColor(ImGuiCol_Text, ui::muted);
+            ImGui::TextUnformatted(ui::fit_middle("Builds into " + where, full).c_str());
+            ImGui::PopStyleColor();
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", where.c_str());
         }
-        ImGui::EndChild();
-        ImGui::PopStyleVar(3);
-        ImGui::PopStyleColor(2);
-
-        if (!app.status.empty()) {
-            ImGui::Spacing();
-            const float status_w = ImGui::CalcTextSize(app.status.c_str()).x;
-            if (avail.x > status_w) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (avail.x - status_w) * 0.5f);
-            ImGui::TextColored(app.status_error ? ImVec4(1.0f, 0.45f, 0.40f, 1.0f) : ImVec4(0.40f, 0.85f, 0.50f, 1.0f),
-                               "%s", app.status.c_str());
+        if (ImGui::Button("New Mod", ImVec2(half, 0))) {
+            if (has_unsaved_changes(app)) {
+                app.pending_action = App::PendingAction::NewMod;
+                app.show_confirm_discard_modal = true;
+            } else {
+                reset_mod(app);
+            }
         }
-    } else {
-        std::vector<std::vector<std::string>> problems(app.rows.size());
-        std::size_t blocked = 0;
-        for (std::size_t i = 0; i < app.rows.size(); ++i) {
-            problems[i] = row_problems(app, i);
-            if (!problems[i].empty()) ++blocked;
+        ImGui::SameLine();
+        if (ImGui::Button("Open Mod...", ImVec2(half, 0))) {
+            if (has_unsaved_changes(app)) {
+                app.pending_action = App::PendingAction::OpenMod;
+                app.show_confirm_discard_modal = true;
+            } else {
+                const auto folders = pick(window, true);
+                if (!folders.empty()) open_mod(app, folders[0]);
+            }
         }
+        ImGui::EndDisabled();
 
-        // Playlist filter tabs (when multiple playlists exist or custom playlists created)
-        if (unique_playlists.size() > 1 || !app.custom_playlists.empty()) {
-            if (ImGui::BeginTabBar("playlist_tabs", ImGuiTabBarFlags_FittingPolicyScroll)) {
-                const std::string all_label = "All (" + std::to_string(app.rows.size()) + ")###tab_all";
-                ImGuiTabItemFlags all_flags = 0;
-                if (app.select_playlist_tab && app.select_playlist_tab->empty()) {
-                    all_flags |= ImGuiTabItemFlags_SetSelected;
+        // Playlists, cover and audio scroll when the window is short; Build stays pinned below them.
+        const float bottom = S(42) + ImGui::GetFrameHeight() + style.ItemSpacing.y * 2;
+        ImGui::BeginChild("sidebar_scroll", ImVec2(0, std::max(S(80), ImGui::GetContentRegionAvail().y - bottom)), 0,
+                          ImGuiWindowFlags_NoBackground);
+
+        // Playlists: a list that filters the songs; dropping a song (dragged by its number) moves it there.
+        ui::section("PLAYLISTS");
+        ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - ImGui::GetFrameHeight());
+        ImGui::SetCursorPosY(ImGui::GetCursorPosY() - S(1));
+        ImGui::BeginDisabled(busy);
+        if (ui::ghost_button("+##new_playlist", ImVec2(ImGui::GetFrameHeight(), ImGui::GetTextLineHeight() + S(2)))) {
+            app.show_new_playlist_modal = true;
+            app.new_playlist_input.fill(0);
+            app.new_playlist_row_target = -1;
+        }
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Create a new playlist");
+        ImGui::SetNextItemWidth(-1);
+        ImGui::InputTextWithHint("##playlist", "Default playlist name", app.playlist.data(), app.playlist.size());
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Default playlist name in skate. Songs use this unless given their own playlist.");
+
+        const float item_h = ImGui::GetFrameHeight();
+        ImGui::PushStyleVar(ImGuiStyleVar_SelectableTextAlign, ImVec2(0.0f, 0.5f));
+        {
+            const auto entry = [&](const std::string& id, const std::string& label, std::size_t count, double seconds,
+                                   bool selected, const char* tag) {
+                const ImVec2 at = ImGui::GetCursorPos();
+                const bool clicked = ImGui::Selectable(("##" + id).c_str(), selected, ImGuiSelectableFlags_AllowOverlap,
+                                                       ImVec2(0, item_h));
+                const bool hovered = ImGui::IsItemHovered();
+                const ImVec2 after = ImGui::GetCursorPos();
+                const std::string right = std::to_string(count);
+                const float right_w = ImGui::CalcTextSize(right.c_str()).x;
+                const float tag_w = tag ? ImGui::CalcTextSize(tag).x + S(8) : 0.0f;
+                const float width = ImGui::GetContentRegionAvail().x;
+                ImGui::SetCursorPos(ImVec2(at.x + S(8), at.y + (item_h - ImGui::GetTextLineHeight()) * 0.5f));
+                ImGui::TextUnformatted(ui::fit_middle(label, width - right_w - tag_w - S(24)).c_str());
+                if (tag) {
+                    ImGui::SameLine(0, S(8));
+                    ImGui::TextColored(ui::muted, "%s", tag);
                 }
-                if (ImGui::BeginTabItem(all_label.c_str(), nullptr, all_flags)) {
-                    app.active_playlist_filter.clear();
-                    ImGui::EndTabItem();
+                ImGui::SameLine(width - right_w - S(6));
+                ImGui::TextColored(ui::muted, "%s", right.c_str());
+                ImGui::SetCursorPos(after);
+                if (hovered && count) ImGui::SetTooltip("%zu song%s, %s", count, count == 1 ? "" : "s", ui::duration(seconds).c_str());
+                return clicked;
+            };
+            double all_seconds = 0;
+            for (const auto& r : app.rows) all_seconds += r.scanned ? r.seconds : 0;
+            if (entry("all", "All songs", app.rows.size(), all_seconds, app.active_playlist_filter.empty(), nullptr))
+                app.active_playlist_filter.clear();
+            for (const auto& pl : unique_playlists) {
+                ImGui::PushID(pl.c_str());
+                const auto& stats = playlist_stats[pl];
+                const bool unnamed = pl == defaultPlaylistName && !app.playlist[0];
+                if (entry("pl", unnamed ? "Unnamed playlist" : pl, stats.first, stats.second, app.active_playlist_filter == pl,
+                          pl == defaultPlaylistName ? "default" : nullptr))
+                    app.active_playlist_filter = pl;
+                if (ImGui::BeginDragDropTarget()) {
+                    if (const auto* payload = ImGui::AcceptDragDropPayload("RSMP_ROW")) {
+                        const auto index = *static_cast<const std::size_t*>(payload->Data);
+                        if (index < app.rows.size()) assign_playlist(app.rows[index], pl);
+                    }
+                    ImGui::EndDragDropTarget();
                 }
-
-                for (const auto& pl : unique_playlists) {
-                    const auto count = playlist_stats[pl].first;
-                    const std::string tab_label = pl + " (" + std::to_string(count) + ")###tab_" + pl;
-                    ImGuiTabItemFlags tab_flags = 0;
-                    if (app.select_playlist_tab && *app.select_playlist_tab == pl) {
-                        tab_flags |= ImGuiTabItemFlags_SetSelected;
-                    }
-                    bool tab_open = true;
-                    bool* p_open = (pl != defaultPlaylistName && count == 0) ? &tab_open : nullptr;
-                    if (ImGui::BeginTabItem(tab_label.c_str(), p_open, tab_flags)) {
-                        app.active_playlist_filter = pl;
-                        ImGui::EndTabItem();
-                    }
-                    if (p_open && !tab_open) {
+                if (pl != defaultPlaylistName && stats.first == 0 && ImGui::BeginPopupContextItem("playlist_menu")) {
+                    if (ImGui::MenuItem("Remove empty playlist")) {
                         std::erase(app.custom_playlists, pl);
                         if (app.active_playlist_filter == pl) app.active_playlist_filter.clear();
                     }
-                }
-
-                if (ImGui::TabItemButton("+", ImGuiTabItemFlags_Trailing | ImGuiTabItemFlags_NoTooltip)) {
-                    app.show_new_playlist_modal = true;
-                    app.new_playlist_input.fill(0);
-                    app.new_playlist_row_target = -1;
-                }
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Create a new playlist");
-
-                ImGui::EndTabBar();
-                app.select_playlist_tab.reset();
-            }
-            ImGui::Spacing();
-        }
-
-        const float footer = ImGui::GetFrameHeightWithSpacing() * 3.5f + S(16.0f);
-        std::optional<std::pair<std::size_t, std::size_t>> up_target, down_target;
-        std::optional<std::size_t> remove;
-        if (ImGui::BeginTable("songs", 7,
-                              ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuter | ImGuiTableFlags_BordersInnerH |
-                                  ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable,
-                              ImVec2(0, ImGui::GetContentRegionAvail().y - footer))) {
-            ImGui::TableSetupScrollFreeze(0, 1);
-            ImGui::TableSetupColumn("#", ImGuiTableColumnFlags_WidthFixed, S(32));
-            ImGui::TableSetupColumn("Artist", ImGuiTableColumnFlags_WidthStretch, 1.1f);
-            ImGui::TableSetupColumn("Title", ImGuiTableColumnFlags_WidthStretch, 1.3f);
-            ImGui::TableSetupColumn("Playlist (?)", ImGuiTableColumnFlags_WidthStretch, 1.0f);
-            ImGui::TableSetupColumn("Length", ImGuiTableColumnFlags_WidthFixed, S(64));
-            ImGui::TableSetupColumn("Problems", ImGuiTableColumnFlags_WidthStretch, 0.9f);
-            ImGui::TableSetupColumn("Actions", ImGuiTableColumnFlags_WidthFixed, S(175));
-
-            const int columns_count = ImGui::TableGetColumnCount();
-            ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
-            for (int column_n = 0; column_n < columns_count; column_n++) {
-                if (!ImGui::TableSetColumnIndex(column_n)) continue;
-                const char* name = ImGui::TableGetColumnName(column_n);
-                ImGui::PushID(column_n);
-                ImGui::TableHeader(name);
-                if (column_n == 3 && ImGui::IsItemHovered()) {
-                    ImGui::SetTooltip("Playlist for this song.\nLeave blank to use the default playlist, or select/type a custom name to group songs into separate playlists.");
+                    ImGui::EndPopup();
                 }
                 ImGui::PopID();
             }
+        }
+        ImGui::PopStyleVar();
 
-            std::size_t visible_count = 0;
+        // The cover of the selected playlist (the default one under "All songs"), previewed live.
+        const std::string cover_pl = app.active_playlist_filter.empty() ? defaultPlaylistName : app.active_playlist_filter;
+        const bool cover_named = music::usable_name(cover_pl) && (cover_pl != defaultPlaylistName || app.playlist[0]);
+        ui::section("COVER");
+        const bool artwork_busy = busy || app.artwork_preview_loading;
+        if (cover_named && !artwork_busy && app.artwork_preview_label != cover_pl &&
+            !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId))
+            request_playlist_preview(app, cover_pl);
+        const float cover = S(92.0f);
+        const ImVec2 cover_at = ImGui::GetCursorScreenPos();
+        if (app.artwork_preview && app.artwork_preview_label == cover_pl && !app.artwork_preview_loading) {
+            ImGui::Image(app.artwork_preview, ImVec2(cover, cover));
+        } else {
+            ImGui::Dummy(ImVec2(cover, cover));
+            auto* draw = ImGui::GetWindowDrawList();
+            draw->AddRectFilled(cover_at, ImVec2(cover_at.x + cover, cover_at.y + cover),
+                                ImGui::GetColorU32(ImGuiCol_FrameBg), S(6));
+            const char* text = !cover_named ? "Name the\nplaylist" : app.artwork_preview_loading ? "Loading..." : "No cover";
+            const ImVec2 size = ImGui::CalcTextSize(text);
+            draw->AddText(ImVec2(cover_at.x + (cover - size.x) * 0.5f, cover_at.y + (cover - size.y) * 0.5f),
+                          ImGui::GetColorU32(ui::muted), text);
+        }
+        if (ImGui::IsItemHovered() && !app.artwork_preview_error.empty() && app.artwork_preview_label == cover_pl)
+            ImGui::SetTooltip("%s", app.artwork_preview_error.c_str());
+        ImGui::SameLine();
+        ImGui::BeginGroup();
+        {
+            const float w = ImGui::GetContentRegionAvail().x;
+            const char* mode = "Automatic";
+            std::string chosen;
+            if (const auto it = app.playlist_artwork.find(cover_pl); it != app.playlist_artwork.end() && !it->second.empty()) {
+                chosen = narrow(it->second.filename().wstring());
+                mode = chosen.c_str();
+            } else if (app.generated_playlist_artwork.contains(cover_pl)) mode = "Text cover";
+            ImGui::TextColored(ui::muted, "%s", ui::fit_middle(mode, w).c_str());
+            ImGui::BeginDisabled(artwork_busy || !cover_named);
+            if (ImGui::Button("Image...", ImVec2(w, 0))) {
+                const auto files = pick(window, false, true);
+                if (!files.empty()) {
+                    app.playlist_artwork[cover_pl] = files[0];
+                    app.generated_playlist_artwork.erase(cover_pl);
+                    request_playlist_preview(app, cover_pl);
+                }
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Use an image of your own");
+            if (ImGui::Button("Text", ImVec2((w - style.ItemSpacing.x) * 0.5f, 0))) {
+                app.generated_playlist_artwork.insert(cover_pl);
+                app.playlist_artwork[cover_pl].clear();
+                request_playlist_preview(app, cover_pl);
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Generate a cover with the playlist's name");
+            ImGui::SameLine();
+            if (ImGui::Button("Auto", ImVec2(-1, 0))) {
+                app.playlist_artwork[cover_pl].clear();
+                app.generated_playlist_artwork.erase(cover_pl);
+                request_playlist_preview(app, cover_pl);
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Use the first song's album art");
+            ImGui::EndDisabled();
+        }
+        ImGui::EndGroup();
+        ImGui::BeginDisabled(busy || app.rows.empty());
+        if (ui::ghost_button("Song artwork...", ImVec2(-1, 0))) app.show_artwork_modal = true;
+        ImGui::EndDisabled();
+
+        ui::section("AUDIO");
+        ImGui::BeginDisabled(busy);
+        ImGui::SetNextItemWidth(half);
+        if (ImGui::BeginCombo("##bitrate", (std::string(bitrates[app.bitrate]) + " kbps").c_str())) {
+            for (int i = 0; i < 5; ++i)
+                if (ImGui::Selectable((std::string(bitrates[i]) + " kbps").c_str(), app.bitrate == i)) app.bitrate = i;
+            ImGui::EndCombo();
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Opus audio bitrate");
+        ImGui::SameLine();
+        ImGui::Checkbox("Normalize", &app.normalize);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Equalise track loudness using EBU R128 (-15 LUFS), like the game's own songs");
+        ImGui::EndDisabled();
+
+        ImGui::EndChild(); // sidebar_scroll
+
+        // Build and export, pinned to the bottom.
+        ImGui::Dummy(ImVec2(0, style.ItemSpacing.y * 0.5f));
+        ImGui::BeginDisabled(busy || !block.empty());
+        if (ui::primary_button("Build mod", ImVec2(-1, S(42)))) {
+            set_status(app, "");
+            std::set<std::string> names;
+            if (app.playlist[0]) names.insert(app.playlist.data());
+            for (const auto& row : app.rows) if (row.playlist[0]) names.insert(row.playlist.data());
+            const bool any_automatic = std::any_of(names.begin(), names.end(), [&](const std::string& name) {
+                return !(app.playlist_artwork.contains(name) && !app.playlist_artwork[name].empty()) &&
+                       !app.generated_playlist_artwork.contains(name);
+            });
+            if (any_automatic) app.show_playlist_artwork_prompt = true;
+            else build(app);
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("%s", block.empty() ? ("Build into " + narrow(output_folder(app).wstring())).c_str() : block.c_str());
+        if (ImGui::Button("Export Thunderstore...", ImVec2(-1, 0))) {
+            app.show_export_ts = true;
+            if (!app.ts_description[0]) copy_text(app.ts_description, "Adds " + std::to_string(app.rows.size()) + " song(s) to skate.");
+        }
+        ImGui::EndDisabled();
+    }
+    ImGui::EndChild();
+    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor();
+
+    // ---- Main pane: the songs ---------------------------------------------------------------------
+    ImGui::SameLine(0, S(16));
+    ImGui::BeginGroup();
+    const float main_w = ImGui::GetContentRegionAvail().x; // SameLine offsets below are relative to this group
+    const float status_h = ImGui::GetFrameHeight() + S(10);
+    if (app.rows.empty()) {
+        ImGui::BeginChild("empty", ImVec2(0, ImGui::GetContentRegionAvail().y - status_h));
+        if (ui::begin_card("empty_state_card", ImVec2(S(640), S(330)))) {
+            const float card_avail = ImGui::GetContentRegionAvail().x;
+            const auto centred = [&](const char* text, const ImVec4& color) {
+                const float w = ImGui::CalcTextSize(text).x;
+                if (card_avail > w) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (card_avail - w) * 0.5f);
+                ImGui::TextColored(color, "%s", text);
+            };
+            // An equalizer graphic.
+            const float icon_w = S(72.0f), icon_h = S(42.0f);
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, (card_avail - icon_w) * 0.5f));
+            const ImVec2 p0 = ImGui::GetCursorScreenPos();
+            ImGui::Dummy(ImVec2(icon_w, icon_h));
+            const float heights[]{10.0f, 18.0f, 28.0f, 38.0f, 42.0f, 38.0f, 28.0f, 18.0f, 10.0f};
+            const float bar_w = S(4.5f), bar_gap = S(3.8f);
+            const float start_x = p0.x + (icon_w - (9 * bar_w + 8 * bar_gap)) * 0.5f;
+            for (int b = 0; b < 9; ++b) {
+                const float bh = heights[b] * (icon_h / 42.0f);
+                const float bx = start_x + static_cast<float>(b) * (bar_w + bar_gap);
+                const float t = 1.0f - std::abs(static_cast<float>(b) - 4.0f) / 5.0f;
+                ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(bx, p0.y + (icon_h - bh) * 0.5f), ImVec2(bx + bar_w, p0.y + (icon_h + bh) * 0.5f),
+                    ImGui::ColorConvertFloat4ToU32(ImVec4(0.18f + 0.14f * t, 0.52f + 0.28f * t, 0.92f + 0.08f * t, 0.70f + 0.30f * t)), S(2.5f));
+            }
+            ImGui::Dummy(ImVec2(0, S(10)));
+            if (ui::heading_font) ImGui::PushFont(ui::heading_font);
+            centred("Drop songs or folders here", ImGui::GetStyleColorVec4(ImGuiCol_Text));
+            if (ui::heading_font) ImGui::PopFont();
+            ImGui::Spacing();
+            centred(("Drag music in from " + std::string(file_manager) + ", or browse for it.").c_str(), ui::muted);
+            centred("MP3, FLAC, WAV, OGG, Opus, AAC, M4A, AIFF and anything else ffmpeg reads.", ui::muted);
+            ImGui::Dummy(ImVec2(0, S(16)));
+            const float w1 = S(170), w2 = S(150);
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, (card_avail - w1 - w2 - S(12)) * 0.5f));
+            ImGui::BeginDisabled(busy);
+            if (ui::primary_button("Browse songs...", ImVec2(w1, S(36)))) add_files(app, pick(window, false));
+            ImGui::SameLine(0, S(12));
+            if (ImGui::Button("Add folder...", ImVec2(w2, S(36)))) add_files(app, pick(window, true));
+            ImGui::EndDisabled();
+            ImGui::Dummy(ImVec2(0, S(14)));
+            centred("Tags and embedded album covers are read automatically.", ui::muted);
+        }
+        ui::end_card();
+        ImGui::EndChild();
+    } else {
+        // Header: what is shown, how much of it, and adding more.
+        const std::string title = app.active_playlist_filter.empty() ? "All songs" : app.active_playlist_filter;
+        std::size_t shown = 0;
+        double shown_seconds = 0;
+        bool all_scanned = true;
+        for (const auto& r : app.rows) {
+            const std::string pl = r.playlist[0] ? r.playlist.data() : defaultPlaylistName;
+            if (!app.active_playlist_filter.empty() && pl != app.active_playlist_filter) continue;
+            ++shown;
+            if (r.scanned) shown_seconds += r.seconds;
+            else all_scanned = false;
+        }
+        const float add_w = S(118);
+        ImGui::BeginGroup();
+        ui::heading(title.c_str());
+        ImGui::TextColored(ui::muted, "%zu song%s \xC2\xB7 %s%s", shown, shown == 1 ? "" : "s", ui::duration(shown_seconds).c_str(),
+                           all_scanned ? "" : " \xC2\xB7 reading tags...");
+        ImGui::EndGroup();
+        ImGui::SameLine(main_w - add_w * 2 - style.ItemSpacing.x);
+        ImGui::BeginDisabled(busy);
+        if (ImGui::Button("Add songs...", ImVec2(add_w, 0))) add_files(app, pick(window, false));
+        if (!app.active_playlist_filter.empty() && ImGui::IsItemHovered()) ImGui::SetTooltip("Add songs directly into \"%s\"", app.active_playlist_filter.c_str());
+        ImGui::SameLine();
+        if (ImGui::Button("Add folder...", ImVec2(add_w, 0))) add_files(app, pick(window, true));
+        if (!app.active_playlist_filter.empty() && ImGui::IsItemHovered()) ImGui::SetTooltip("Add a folder's songs directly into \"%s\"", app.active_playlist_filter.c_str());
+        ImGui::EndDisabled();
+        ImGui::Spacing();
+
+        // The table. Drag a song by its number to reorder it, or onto a playlist in the sidebar.
+        std::optional<std::pair<std::size_t, std::size_t>> up_target, down_target, drag_move;
+        std::optional<std::size_t> remove;
+        const bool many_playlists = unique_playlists.size() > 1 || !app.custom_playlists.empty();
+        ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(S(6), S(4)));
+        ImGui::PushStyleVar(ImGuiStyleVar_SelectableTextAlign, ImVec2(0.5f, 0.5f));
+        if (ImGui::BeginTable("songs", 8,
+                              ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_ScrollY |
+                                  ImGuiTableFlags_Resizable | ImGuiTableFlags_PadOuterX,
+                              ImVec2(0, ImGui::GetContentRegionAvail().y - status_h))) {
+            ImGui::TableSetupScrollFreeze(0, 1);
+            ImGui::TableSetupColumn("#", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoResize, S(30));
+            ImGui::TableSetupColumn("Artist", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+            ImGui::TableSetupColumn("Title", ImGuiTableColumnFlags_WidthStretch, 1.2f);
+            ImGui::TableSetupColumn("Playlist", ImGuiTableColumnFlags_WidthStretch | (many_playlists ? 0 : ImGuiTableColumnFlags_Disabled), 1.0f);
+            ImGui::TableSetupColumn("Art", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoResize, S(32));
+            ImGui::TableSetupColumn("Length", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoResize, S(58));
+            ImGui::TableSetupColumn("Problems", ImGuiTableColumnFlags_WidthStretch | (blocked ? 0 : ImGuiTableColumnFlags_Disabled), 0.9f);
+            ImGui::TableSetupColumn("##actions", ImGuiTableColumnFlags_WidthFixed | ImGuiTableColumnFlags_NoResize, S(118));
+            ImGui::TableHeadersRow();
+
+            // Cells read like a list until hovered or edited.
+            ImGui::PushStyleColor(ImGuiCol_FrameBg, ui::transparent);
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
+
             static int active_context_row = -1;
             for (std::size_t i = 0; i < app.rows.size(); ++i) {
                 auto& row = app.rows[i];
-                const std::string row_pl = row.playlist[0] ? row.playlist.data() : defaultPlaylistName;
-                if (!app.active_playlist_filter.empty() && row_pl != app.active_playlist_filter) {
-                    continue;
-                }
-                ++visible_count;
-
-                // Find prev index matching current filter
-                std::optional<std::size_t> prev_matching;
-                for (std::size_t k = i; k > 0; --k) {
-                    const std::size_t check_idx = k - 1;
-                    const std::string check_pl = app.rows[check_idx].playlist[0] ? app.rows[check_idx].playlist.data() : defaultPlaylistName;
-                    if (app.active_playlist_filter.empty() || check_pl == app.active_playlist_filter) {
-                        prev_matching = check_idx;
-                        break;
-                    }
-                }
-                // Find next index matching current filter
-                std::optional<std::size_t> next_matching;
-                for (std::size_t check_idx = i + 1; check_idx < app.rows.size(); ++check_idx) {
-                    const std::string check_pl = app.rows[check_idx].playlist[0] ? app.rows[check_idx].playlist.data() : defaultPlaylistName;
-                    if (app.active_playlist_filter.empty() || check_pl == app.active_playlist_filter) {
-                        next_matching = check_idx;
-                        break;
-                    }
-                }
+                const auto filtered_out = [&](std::size_t k) {
+                    const std::string pl = app.rows[k].playlist[0] ? app.rows[k].playlist.data() : defaultPlaylistName;
+                    return !app.active_playlist_filter.empty() && pl != app.active_playlist_filter;
+                };
+                if (filtered_out(i)) continue;
+                std::optional<std::size_t> prev_matching, next_matching;
+                for (std::size_t k = i; k > 0; --k) if (!filtered_out(k - 1)) { prev_matching = k - 1; break; }
+                for (std::size_t k = i + 1; k < app.rows.size(); ++k) if (!filtered_out(k)) { next_matching = k; break; }
 
                 ImGui::PushID(static_cast<int>(i));
-                ImGui::TableNextRow();
+                ImGui::TableNextRow(0, ImGui::GetFrameHeight());
 
-                // # column with full-row selectable context target
+                // Number: the row's handle for dragging, its menu and its details.
                 ImGui::TableNextColumn();
-                char row_label[32];
-                std::snprintf(row_label, sizeof(row_label), "%zu", i + 1);
-                ImGui::Selectable(row_label, false, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap);
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s\n(Right-click row for options)", narrow(row.file.wstring()).c_str());
+                const bool has_problems = !problems[i].empty();
+                char number[16];
+                std::snprintf(number, sizeof(number), "%zu", i + 1);
+                ImGui::PushStyleColor(ImGuiCol_Text, has_problems ? ui::warning : ui::muted);
+                ImGui::Selectable(number, false, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap,
+                                  ImVec2(0, ImGui::GetFrameHeight()));
+                ImGui::PopStyleColor();
+                if (ImGui::BeginDragDropSource()) {
+                    ImGui::SetDragDropPayload("RSMP_ROW", &i, sizeof(i));
+                    ImGui::Text("%s - %s", row.artist.data(), row.title.data());
+                    ImGui::EndDragDropSource();
+                }
+                if (ImGui::BeginDragDropTarget()) {
+                    if (const auto* payload = ImGui::AcceptDragDropPayload("RSMP_ROW"))
+                        drag_move = std::make_pair(*static_cast<const std::size_t*>(payload->Data), i);
+                    ImGui::EndDragDropTarget();
+                }
+                if (ImGui::IsItemHovered() && !ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
+                    ImGui::BeginTooltip();
+                    ImGui::TextUnformatted(narrow(row.file.wstring()).c_str());
+                    for (const auto& problem : problems[i]) ImGui::TextColored(ui::warning, "%s", problem.c_str());
+                    ImGui::TextColored(ui::muted, "Drag to reorder or onto a playlist. Right-click for more.");
+                    ImGui::EndTooltip();
+                }
 
                 if (active_context_row == static_cast<int>(i)) {
                     ImGui::OpenPopup("row_context");
                     active_context_row = -1;
                 }
-
-                // Row context menu (from right-click on row or '...' button)
                 if (ImGui::BeginPopupContextItem("row_context")) {
                     ImGui::TextDisabled("%s - %s", row.artist.data(), row.title.data());
                     ImGui::Separator();
                     if (ImGui::BeginMenu("Assign to Playlist")) {
                         for (const auto& pl_name : unique_playlists) {
                             const bool is_curr = (row.playlist[0] ? row.playlist.data() == pl_name : pl_name == defaultPlaylistName);
-                            if (ImGui::MenuItem((pl_name + (pl_name == defaultPlaylistName ? " (default)" : "")).c_str(), nullptr, is_curr)) {
-                                if (pl_name == defaultPlaylistName) {
-                                    row.playlist.fill(0);
-                                } else {
-                                    copy_text(row.playlist, pl_name);
-                                }
-                            }
+                            if (ImGui::MenuItem((pl_name + (pl_name == defaultPlaylistName ? " (default)" : "")).c_str(), nullptr, is_curr))
+                                assign_playlist(row, pl_name);
                         }
                         ImGui::Separator();
                         if (ImGui::MenuItem("+ New Playlist...")) {
@@ -1557,69 +1662,48 @@ void songs_page(App& app, NativeWindow window) {
                     if (ImGui::BeginMenu("Artwork")) {
                         if (ImGui::MenuItem("Choose Image...")) {
                             const auto files = pick(window, false, true);
-                            if (!files.empty()) {
-                                row.artwork = files[0];
-                            }
+                            if (!files.empty()) row.artwork = files[0];
                         }
-                        if (!row.artwork.empty() && ImGui::MenuItem("Use Embedded / Automatic Artwork")) {
-                            row.artwork.clear();
-                        }
-                        if (ImGui::MenuItem("Manage All Artwork...")) {
-                            app.show_artwork_modal = true;
-                        }
+                        if (!row.artwork.empty() && ImGui::MenuItem("Use Embedded / Automatic Artwork")) row.artwork.clear();
+                        if (ImGui::MenuItem("Manage All Artwork...")) app.show_artwork_modal = true;
                         ImGui::EndMenu();
                     }
                     ImGui::Separator();
-                    if (ImGui::MenuItem("Move Up", nullptr, false, prev_matching.has_value() && !busy)) {
-                        if (prev_matching) up_target = std::make_pair(i, *prev_matching);
-                    }
-                    if (ImGui::MenuItem("Move Down", nullptr, false, next_matching.has_value() && !busy)) {
-                        if (next_matching) down_target = std::make_pair(i, *next_matching);
-                    }
+                    if (ImGui::MenuItem("Move Up", nullptr, false, prev_matching.has_value() && !busy))
+                        up_target = std::make_pair(i, *prev_matching);
+                    if (ImGui::MenuItem("Move Down", nullptr, false, next_matching.has_value() && !busy))
+                        down_target = std::make_pair(i, *next_matching);
                     ImGui::Separator();
-                    if (ImGui::MenuItem("Remove Song", nullptr, false, !busy)) {
-                        remove = i;
-                    }
+                    if (ImGui::MenuItem("Remove Song", nullptr, false, !busy)) remove = i;
                     ImGui::EndPopup();
                 }
 
-                // Artist column
                 ImGui::BeginDisabled(busy);
                 ImGui::TableNextColumn();
                 ImGui::SetNextItemWidth(-1);
-                ImGui::InputText("##artist", row.artist.data(), row.artist.size());
-
-                // Title column
+                ImGui::InputTextWithHint("##artist", "Artist", row.artist.data(), row.artist.size());
                 ImGui::TableNextColumn();
                 ImGui::SetNextItemWidth(-1);
-                ImGui::InputText("##title", row.title.data(), row.title.size());
+                ImGui::InputTextWithHint("##title", "Title", row.title.data(), row.title.size());
 
-                // Playlist column
+                // Playlist: type a name, or pick one from the arrow's menu.
                 ImGui::TableNextColumn();
                 const float arrow_w = ImGui::GetFrameHeight();
-                const float spacing = style.ItemSpacing.x;
-                ImGui::SetNextItemWidth(std::max(S(30.0f), ImGui::GetContentRegionAvail().x - arrow_w - spacing));
-                ImGui::InputTextWithHint("##playlist", app.playlist[0] ? app.playlist.data() : "Default", row.playlist.data(), row.playlist.size());
-                if (ImGui::IsItemHovered()) {
-                    ImGui::SetTooltip("Playlist for this track.\nLeave blank to inherit \"%s\", or select/type a custom name.", app.playlist[0] ? app.playlist.data() : "Default");
-                }
-                ImGui::SameLine(0, spacing);
-                if (ImGui::ArrowButton("##pl_arrow", ImGuiDir_Down)) {
-                    ImGui::OpenPopup("PlaylistCellMenu");
-                }
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Choose from existing playlists or create new");
+                ImGui::SetNextItemWidth(std::max(S(30.0f), ImGui::GetContentRegionAvail().x - arrow_w - style.ItemInnerSpacing.x));
+                ImGui::InputTextWithHint("##playlist", defaultPlaylistName.c_str(), row.playlist.data(), row.playlist.size());
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Playlist for this song.\nLeave blank to use \"%s\", or type or pick another.", defaultPlaylistName.c_str());
+                ImGui::SameLine(0, style.ItemInnerSpacing.x);
+                ImGui::PushStyleColor(ImGuiCol_Button, ui::transparent);
+                if (ImGui::ArrowButton("##pl_arrow", ImGuiDir_Down)) ImGui::OpenPopup("PlaylistCellMenu");
+                ImGui::PopStyleColor();
                 if (ImGui::BeginPopup("PlaylistCellMenu")) {
                     ImGui::TextDisabled("Assign to Playlist");
                     ImGui::Separator();
                     for (const auto& pl_name : unique_playlists) {
                         const bool is_curr = (row.playlist[0] ? row.playlist.data() == pl_name : pl_name == defaultPlaylistName);
-                        if (ImGui::MenuItem((pl_name + (pl_name == defaultPlaylistName ? " (default)" : "")).c_str(), nullptr, is_curr)) {
-                            if (pl_name == defaultPlaylistName) {
-                                row.playlist.fill(0);
-                            } else {
-                                copy_text(row.playlist, pl_name);
-                            }
-                        }
+                        if (ImGui::MenuItem((pl_name + (pl_name == defaultPlaylistName ? " (default)" : "")).c_str(), nullptr, is_curr))
+                            assign_playlist(row, pl_name);
                     }
                     ImGui::Separator();
                     if (ImGui::MenuItem("+ New Playlist...")) {
@@ -1629,59 +1713,79 @@ void songs_page(App& app, NativeWindow window) {
                     }
                     ImGui::EndPopup();
                 }
+
+                // Art: a dot. Blue for a chosen image, green for embedded album art, hollow for none.
+                ImGui::TableNextColumn();
+                {
+                    const float h = ImGui::GetFrameHeight();
+                    const ImVec2 at = ImGui::GetCursorScreenPos();
+                    const float w = ImGui::GetContentRegionAvail().x;
+                    if (ImGui::InvisibleButton("art", ImVec2(w, h))) {
+                        const auto files = pick(window, false, true);
+                        if (!files.empty()) row.artwork = files[0];
+                    }
+                    const ImVec2 centre(at.x + w * 0.5f, at.y + h * 0.5f);
+                    auto* draw = ImGui::GetWindowDrawList();
+                    const float r = S(5.0f) * (ImGui::IsItemHovered() ? 1.25f : 1.0f);
+                    if (!row.artwork.empty()) draw->AddCircleFilled(centre, r, ImGui::GetColorU32(ui::accent));
+                    else if (row.has_embedded_artwork) draw->AddCircleFilled(centre, r, ImGui::GetColorU32(ui::success));
+                    else draw->AddCircle(centre, r, ImGui::GetColorU32(ui::muted), 0, S(1.5f));
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("%s\nClick to choose an image.",
+                                          !row.artwork.empty() ? ("Cover: " + narrow(row.artwork.filename().wstring())).c_str()
+                                          : row.has_embedded_artwork ? "Cover: the song's embedded album art"
+                                                                     : "No cover");
+                }
                 ImGui::EndDisabled();
 
-                // Length column
                 ImGui::TableNextColumn();
-                if (row.scanned) ImGui::Text("%d:%02d", static_cast<int>(row.seconds) / 60, static_cast<int>(row.seconds) % 60);
+                ImGui::AlignTextToFramePadding();
+                if (row.scanned) ImGui::TextUnformatted(ui::duration(row.seconds).c_str());
                 else ImGui::TextDisabled("...");
 
-                // Problems column
                 ImGui::TableNextColumn();
-                if (!problems[i].empty()) {
+                if (has_problems) {
                     std::string text;
-                    for (const auto& p : problems[i]) text += (text.empty() ? "" : "; ") + p;
-                    ImGui::TextColored(ImVec4(1, 0.55f, 0.35f, 1), "%s", text.c_str());
+                    for (const auto& problem : problems[i]) text += (text.empty() ? "" : "; ") + problem;
+                    ImGui::AlignTextToFramePadding();
+                    ImGui::TextColored(ui::warning, "%s", ui::fit_end(text, ImGui::GetContentRegionAvail().x).c_str());
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", text.c_str());
                 }
 
-                // Actions column
+                // Actions: move, remove, more.
                 ImGui::TableNextColumn();
                 ImGui::BeginDisabled(busy);
+                ImGui::PushStyleColor(ImGuiCol_Button, ui::transparent);
                 ImGui::BeginDisabled(!prev_matching.has_value());
                 if (ImGui::ArrowButton("up", ImGuiDir_Up)) up_target = std::make_pair(i, *prev_matching);
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Move song up");
                 ImGui::EndDisabled();
-
-                ImGui::SameLine();
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("Move up");
+                ImGui::SameLine(0, S(2));
                 ImGui::BeginDisabled(!next_matching.has_value());
                 if (ImGui::ArrowButton("down", ImGuiDir_Down)) down_target = std::make_pair(i, *next_matching);
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Move song down");
                 ImGui::EndDisabled();
-
-                ImGui::SameLine();
-                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.48f, 0.16f, 0.16f, 0.85f));
-                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.68f, 0.22f, 0.22f, 1.00f));
-                ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.78f, 0.15f, 0.15f, 1.00f));
-                if (ImGui::Button("Remove")) remove = i;
-                ImGui::PopStyleColor(3);
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("Move down");
+                ImGui::PopStyleColor();
+                ImGui::SameLine(0, S(2));
+                const ImVec4 danger_bg(ui::danger.x, ui::danger.y, ui::danger.z, 0.55f);
+                if (ui::ghost_button("x##remove", ImVec2(ImGui::GetFrameHeight(), 0), &danger_bg)) remove = i;
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("Remove this song");
-
-                ImGui::SameLine();
-                if (ImGui::Button("...##more_actions")) {
-                    active_context_row = static_cast<int>(i);
-                }
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("More options (right-click track)");
+                ImGui::SameLine(0, S(2));
+                if (ui::ghost_button("...##more_actions", ImVec2(ImGui::GetFrameHeight(), 0))) active_context_row = static_cast<int>(i);
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("More (or right-click the row)");
                 ImGui::EndDisabled();
 
                 ImGui::PopID();
             }
+            ImGui::PopStyleVar();
+            ImGui::PopStyleColor();
 
-            if (visible_count == 0 && !app.active_playlist_filter.empty()) {
+            if (shown == 0 && !app.active_playlist_filter.empty()) {
                 ImGui::TableNextRow();
                 ImGui::TableSetColumnIndex(1);
                 ImGui::Dummy(ImVec2(0, S(8)));
                 ImGui::TextDisabled("No songs in \"%s\" yet.", app.active_playlist_filter.c_str());
-                ImGui::TextDisabled("Drag audio files here or click 'Add songs...' below to add tracks to this playlist.");
+                ImGui::TextDisabled("Drop files here, use Add songs..., or drag songs onto it in the sidebar.");
                 ImGui::Dummy(ImVec2(0, S(8)));
             }
 
@@ -1694,141 +1798,37 @@ void songs_page(App& app, NativeWindow window) {
                     app.new_playlist_input.fill(0);
                     app.show_new_playlist_modal = true;
                 }
-                if (ImGui::MenuItem("Manage Artwork...")) {
-                    app.show_artwork_modal = true;
-                }
+                if (ImGui::MenuItem("Manage Artwork...")) app.show_artwork_modal = true;
                 ImGui::EndPopup();
             }
-
             ImGui::EndTable();
         }
+        ImGui::PopStyleVar(2);
         if (up_target) std::swap(app.rows[up_target->first], app.rows[up_target->second]);
         if (down_target) std::swap(app.rows[down_target->first], app.rows[down_target->second]);
+        if (drag_move && drag_move->first != drag_move->second && drag_move->first < app.rows.size() && !busy) {
+            auto moved = std::move(app.rows[drag_move->first]);
+            app.rows.erase(app.rows.begin() + static_cast<std::ptrdiff_t>(drag_move->first));
+            app.rows.insert(app.rows.begin() + static_cast<std::ptrdiff_t>(drag_move->second), std::move(moved));
+        }
         if (remove) app.rows.erase(app.rows.begin() + static_cast<std::ptrdiff_t>(*remove));
-
-        ImGui::Spacing();
-        // Footer: add songs/folder, summary of count and duration, build / export
-        ImGui::BeginDisabled(busy);
-        if (ImGui::Button("Add songs...", ImVec2(S(105), S(26)))) add_files(app, pick(window, false));
-        if (!app.active_playlist_filter.empty() && ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Add songs directly into \"%s\"", app.active_playlist_filter.c_str());
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Add folder...", ImVec2(S(105), S(26)))) add_files(app, pick(window, true));
-        if (!app.active_playlist_filter.empty() && ImGui::IsItemHovered()) {
-            ImGui::SetTooltip("Add folder tracks directly into \"%s\"", app.active_playlist_filter.c_str());
-        }
-        ImGui::EndDisabled();
-
-        ImGui::SameLine();
-        double total_seconds = 0.0;
-        bool all_scanned = true;
-        for (const auto& r : app.rows) {
-            if (r.scanned) total_seconds += r.seconds;
-            else all_scanned = false;
-        }
-        std::string summary;
-        if (unique_playlists.size() > 1) {
-            summary = std::to_string(unique_playlists.size()) + " playlists | ";
-        }
-        summary += std::to_string(app.rows.size()) + " song" + (app.rows.size() == 1 ? "" : "s");
-        if (!all_scanned) {
-            summary += " (scanning tags...)";
-        } else {
-            const int total_sec = static_cast<int>(total_seconds);
-            const int hours = total_sec / 3600;
-            const int mins = (total_sec % 3600) / 60;
-            const int secs = total_sec % 60;
-            char dur_buf[64];
-            if (hours > 0) {
-                std::snprintf(dur_buf, sizeof(dur_buf), " (%d:%02d:%02d)", hours, mins, secs);
-            } else {
-                std::snprintf(dur_buf, sizeof(dur_buf), " (%d:%02d)", mins, secs);
-            }
-            summary += dur_buf;
-        }
-        const float summary_w = ImGui::CalcTextSize(summary.c_str()).x;
-        const float rem_w = ImGui::GetContentRegionAvail().x;
-        if (rem_w > summary_w) {
-            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + rem_w - summary_w);
-        }
-        ImGui::TextDisabled("%s", summary.c_str());
-        if (unique_playlists.size() > 1 && ImGui::IsItemHovered()) {
-            if (ImGui::BeginTooltip()) {
-                ImGui::TextUnformatted("Playlist Breakdown");
-                ImGui::Separator();
-                for (const auto& pl : unique_playlists) {
-                    const auto& stats = playlist_stats[pl];
-                    const int sec = static_cast<int>(stats.second);
-                    const int h = sec / 3600;
-                    const int m = (sec % 3600) / 60;
-                    const int s = sec % 60;
-                    char buf[64];
-                    if (h > 0) std::snprintf(buf, sizeof(buf), "%d:%02d:%02d", h, m, s);
-                    else std::snprintf(buf, sizeof(buf), "%d:%02d", m, s);
-                    ImGui::BulletText("%s: %zu song%s (%s)", pl.c_str(), stats.first, stats.first == 1 ? "" : "s", buf);
-                }
-                ImGui::EndTooltip();
-            }
-        }
-
-        std::string block;
-        if (!music::usable_name(app.name.data())) block = "Give the mod a name.";
-        else if (!music::usable_name(app.playlist.data())) block = "Give the playlist a name.";
-        else if (blocked) block = std::to_string(blocked) + " song(s) need fixing.";
-        else if (std::any_of(app.rows.begin(), app.rows.end(), [](const Row& r) { return !r.scanned; })) block = "Reading the songs...";
-
-        if (busy) {
-            std::lock_guard lock(app.mutex);
-            ImGui::ProgressBar(app.progress, ImVec2(S(-120), S(28)), (app.job + ": " + app.progress_text).c_str());
-            ImGui::SameLine();
-            if (ImGui::Button("Cancel", ImVec2(-1, S(28)))) app.cancel = true;
-        } else {
-            if (!app.status.empty())
-                ImGui::TextColored(app.status_error ? ImVec4(1.0f, 0.45f, 0.40f, 1.0f) : ImVec4(0.40f, 0.85f, 0.50f, 1.0f), "%s", app.status.c_str());
-            else if (!block.empty()) ImGui::TextDisabled("%s", block.c_str());
-            else if (game_running()) ImGui::TextColored(ImVec4(1.0f, 0.80f, 0.35f, 1.0f), "skate. is running: the mod takes effect the next time it starts.");
-            else ImGui::TextUnformatted("");
-
-            const float button_width = block.empty() ? (ImGui::GetContentRegionAvail().x - S(10)) * 0.65f : ImGui::GetContentRegionAvail().x;
-            ImGui::BeginDisabled(!block.empty());
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.16f, 0.45f, 0.78f, 1.00f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.22f, 0.54f, 0.90f, 1.00f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.13f, 0.38f, 0.68f, 1.00f));
-            if (ImGui::Button(("Build into Mods" + narrow(std::wstring(1, fs::path::preferred_separator)) + narrow(output_folder(app).filename().wstring())).c_str(), ImVec2(button_width, S(32)))) {
-                set_status(app, "");
-                std::set<std::string> names;
-                if (app.playlist[0]) names.insert(app.playlist.data());
-                for (const auto& row : app.rows) if (row.playlist[0]) names.insert(row.playlist.data());
-                bool any_automatic = false;
-                for (const auto& name : names) {
-                    bool hasImage = app.playlist_artwork.contains(name) && !app.playlist_artwork[name].empty();
-                    bool hasGen = app.generated_playlist_artwork.contains(name);
-                    if (!hasImage && !hasGen) {
-                        any_automatic = true;
-                        break;
-                    }
-                }
-                if (any_automatic) {
-                    app.show_playlist_artwork_prompt = true;
-                } else {
-                    build(app);
-                }
-            }
-            ImGui::PopStyleColor(3);
-
-            if (block.empty()) {
-                ImGui::SameLine();
-                if (ImGui::Button("Export Thunderstore...", ImVec2(-1, S(32)))) {
-                    app.show_export_ts = true;
-                    if (!app.ts_description[0]) {
-                        copy_text(app.ts_description, "Adds " + std::to_string(app.rows.size()) + " song(s) to skate.");
-                    }
-                }
-            }
-            ImGui::EndDisabled();
-        }
     }
+
+    // ---- Status bar: progress, the last result, or what Build is waiting for --------------------
+    ImGui::Dummy(ImVec2(0, S(4)));
+    if (busy) {
+        std::lock_guard lock(app.mutex);
+        ImGui::ProgressBar(app.progress, ImVec2(-S(110), 0), (app.job + (app.progress_text.empty() ? "" : ": " + app.progress_text)).c_str());
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(-1, 0))) app.cancel = true;
+    } else {
+        ImGui::AlignTextToFramePadding();
+        if (!app.status.empty()) ui::status_text(app.status, app.status_error);
+        else if (!block.empty()) ImGui::TextColored(blocked ? ui::warning : ui::muted, "%s", block.c_str());
+        else if (game_running()) ImGui::TextColored(ui::warning, "skate. is running: the mod takes effect the next time it starts.");
+        else ImGui::TextColored(ui::muted, "Ready to build %zu song%s.", app.rows.size(), app.rows.size() == 1 ? "" : "s");
+    }
+    ImGui::EndGroup();
 
     if (app.show_playlist_artwork_prompt) {
         ImGui::OpenPopup("Playlist Artwork Setup");
@@ -2112,8 +2112,6 @@ void frame(App& app, NativeWindow window) {
     if (!game_folder(app.settings.game)) setup_page(app, window);
     else if (!app.ffmpeg) ffmpeg_page(app, window);
     else songs_page(app, window);
-    if (!game_folder(app.settings.game) || !app.ffmpeg)
-        if (!app.status.empty()) ImGui::TextColored(ImVec4(1, 0.45f, 0.4f, 1), "%s", app.status.c_str());
     ImGui::End();
     settings_modal(app, window);
 }
@@ -2343,8 +2341,10 @@ int run_gui(HINSTANCE instance, int /*cmd_show*/) {
     GetWindowsDirectoryW(windows, MAX_PATH);
     const auto font = fs::path(windows) / L"Fonts" / L"segoeui.ttf";
     if (fs::exists(font)) io.Fonts->AddFontFromFileTTF(narrow(font.wstring()).c_str(), S(18.0f));
+    if (const auto bold = fs::path(windows) / L"Fonts" / L"segoeuib.ttf"; fs::exists(font) && fs::exists(bold))
+        ui::heading_font = io.Fonts->AddFontFromFileTTF(narrow(bold.wstring()).c_str(), S(24.0f));
     ImGui::StyleColorsDark();
-    ImGui::GetStyle().ScaleAllSizes(g_scale);
+    apply_theme();
     ImGui_ImplWin32_Init(window);
     Renderer renderer;
     if (!renderer.init(window)) {
@@ -2417,22 +2417,30 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int cmd_show) {
 
 namespace {
 // The UI font: what the system uses for plain sans text, at hand without fontconfig on macOS.
-fs::path ui_font() {
+fs::path ui_font(bool bold = false) {
 #ifdef __APPLE__
-    for (const char* file : {"/System/Library/Fonts/Supplemental/Arial.ttf", "/Library/Fonts/Arial.ttf"})
+    for (const char* file : bold ? std::initializer_list<const char*>{"/System/Library/Fonts/Supplemental/Arial Bold.ttf", "/Library/Fonts/Arial Bold.ttf"}
+                                 : std::initializer_list<const char*>{"/System/Library/Fonts/Supplemental/Arial.ttf", "/Library/Fonts/Arial.ttf"})
         if (fs::exists(file)) return file;
 #else
-    if (std::string file; platform::run_process({"fc-match", "-f", "%{file}", "sans-serif"}, &file) == 0 && fs::exists(file))
+    if (std::string file; platform::run_process({"fc-match", "-f", "%{file}", bold ? "sans-serif:bold" : "sans-serif"}, &file) == 0 &&
+                          fs::exists(file))
         return file;
-    for (const char* file : {"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/TTF/DejaVuSans.ttf",
-                             "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"})
+    for (const char* file : bold ? std::initializer_list<const char*>{"/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+                                                                      "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf"}
+                                 : std::initializer_list<const char*>{"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                                                                      "/usr/share/fonts/TTF/DejaVuSans.ttf",
+                                                                      "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf"})
         if (fs::exists(file)) return file;
 #endif
     return {}; // ImGui's built-in font
 }
 } // namespace
 
-int run_gui() {
+// `files` are songs to start with (`--gui <files>`). RSMP_CAPTURE=<png> saves one settled frame and
+// quits; RSMP_CAPTURE_OPEN=settings|artwork|export|playlist opens that dialog first. Both are for
+// checking the UI from scripts and CI, where there is no screen to look at.
+int run_gui(const std::vector<fs::path>& files) {
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER) != 0) {
         std::fprintf(stderr, "ReSkate Music Packer: cannot open a window: %s\n", SDL_GetError());
         return 1;
@@ -2471,10 +2479,12 @@ int run_gui() {
     const float density = points > 0 && pixels > points ? static_cast<float>(pixels) / static_cast<float>(points) : 1.0f;
     if (const auto font = ui_font(); !font.empty()) {
         io.Fonts->AddFontFromFileTTF(font.string().c_str(), S(18.0f) * density);
+        if (const auto bold = ui_font(true); !bold.empty())
+            ui::heading_font = io.Fonts->AddFontFromFileTTF(bold.string().c_str(), S(24.0f) * density);
         io.FontGlobalScale = 1.0f / density;
     }
     ImGui::StyleColorsDark();
-    ImGui::GetStyle().ScaleAllSizes(g_scale);
+    apply_theme();
 
     auto app_storage = std::make_unique<App>();
     auto& app = *app_storage;
@@ -2483,6 +2493,18 @@ int run_gui() {
     app.settings = load_settings();
     app.ffmpeg = find_ffmpeg(app.settings.ffmpeg);
     refresh_external_songs(app);
+    // `--gui <mod folder>` reopens a mod; anything else is songs to add.
+    if (files.size() == 1 && fs::is_regular_file(files[0] / L"reskate-music-project.json") && game_folder(app.settings.game) && app.ffmpeg)
+        open_mod(app, files[0]);
+    else if (!files.empty() && game_folder(app.settings.game) && app.ffmpeg) add_files(app, files);
+    const auto capture = platform::environment("RSMP_CAPTURE");
+    if (const auto open = platform::environment("RSMP_CAPTURE_OPEN"); !capture.empty()) {
+        app.settings_open = open == "settings";
+        app.show_artwork_modal = open == "artwork";
+        app.show_export_ts = open == "export";
+        app.show_new_playlist_modal = open == "playlist";
+    }
+    int frames = 0;
 
     bool running = true;
     while (running) {
@@ -2506,7 +2528,11 @@ int run_gui() {
         ImGui::NewFrame();
         frame(app, window);
         ImGui::Render();
+        // Capture once background work has settled and the layout has had a few frames to size itself.
+        const bool capture_now = !capture.empty() && ++frames > 30 && !app.busy && !app.artwork_preview_loading;
+        if (capture_now) renderer.capture_next(capture);
         renderer.render();
+        if (capture_now) running = false;
     }
     app.cancel = true;
     if (app.worker.joinable()) app.worker.join();
@@ -2534,6 +2560,9 @@ int main(int argc, char** argv) {
         for (auto& arg : wide) pointers.push_back(arg.data());
         return run_cli(argc, pointers.data());
     }
-    return run_gui();
+    std::vector<fs::path> files;
+    for (int i = 1; i < argc; ++i)
+        if (const std::string_view arg = argv[i]; arg != "--gui" && !arg.starts_with("-psn_")) files.emplace_back(arg);
+    return run_gui(files);
 }
 #endif

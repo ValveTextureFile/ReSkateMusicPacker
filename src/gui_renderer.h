@@ -76,6 +76,7 @@ std::vector<unsigned char> resource_bytes(const wchar_t* name);
 
 #include <imgui.h>
 
+#include <string>
 #include <vector>
 
 struct SDL_Renderer;
@@ -94,9 +95,12 @@ public:
     void release_texture(ImTextureID id);
     void shutdown();
     SDL_Renderer* sdl() const { return renderer_; }
+    // Saves the next rendered frame as a PNG (RSMP_CAPTURE, for checking the UI without a screen).
+    void capture_next(std::string path) { capture_ = std::move(path); }
 
 private:
     SDL_Renderer* renderer_{};
+    std::string capture_;
 };
 
 // Decodes a JPEG/PNG to RGBA with stb_image, scaled down to cover `cover` pixels at most.

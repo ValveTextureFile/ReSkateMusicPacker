@@ -7,6 +7,23 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **Redesigned window**: a sidebar with the mod, a playlist list (replacing the tabs), a live cover
+  preview with Image / Text / Auto, audio settings and a pinned Build button; a song table that reads
+  like a list (frameless cells, artwork dots, compact row actions, a Problems column only when needed);
+  drag a song by its number to reorder it or onto a playlist to move it there; a status bar for
+  progress and what Build is waiting for; first-run setup as a stepped card. The custom theme that
+  was defined but never applied is now used, with a bold heading font.
+- The "is skate. running" check runs at most every two seconds instead of every frame.
+
+### Added
+
+- `--gui <files or mod folder>` (macOS/Linux) starts the GUI with those songs, or reopens that mod.
+- `RSMP_CAPTURE=<png>` (macOS/Linux) saves one settled frame and exits, with
+  `RSMP_CAPTURE_OPEN=settings|artwork|export|playlist` to open a dialog first: for checking the UI
+  from scripts and CI.
+
 ### Added
 
 - **macOS and Linux builds**: the same GUI (SDL2 instead of Win32/Direct3D 12) and CLI. The game's
