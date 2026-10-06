@@ -1,5 +1,7 @@
 name: release
 
+# A v* tag builds and tests Windows, macOS and Linux, then publishes one GitHub Release with all three.
+# Tags with a hyphen (v1.1.2-ui.1) are published as pre-releases.
 on:
   push:
     tags: ["v*"]
@@ -8,7 +10,7 @@ permissions:
   contents: write
 
 jobs:
-  build:
+  windows:
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v4
@@ -45,9 +47,124 @@ jobs:
           Copy-Item External/miniz/LICENSE.txt package/licenses/miniz-LICENSE.txt
           Compress-Archive -Path package/* -DestinationPath "ReSkateMusicPacker-${{ github.ref_name }}-win64.zip"
 
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: ReSkateMusicPacker-${{ github.ref_name }}-win64.zip
+
+  # One universal .app (Apple Silicon + Intel, macOS 11+) with SDL2 linked in, so nothing else is needed.
+  macos:
+    runs-on: macos-14
+    env:
+      SDL_VERSION: "2.32.10"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build SDL2 (static, universal, macOS 11)
+        run: |
+          curl -sfL "https://github.com/libsdl-org/SDL/releases/download/release-${SDL_VERSION}/SDL2-${SDL_VERSION}.tar.gz" | tar xz
+          cmake -S "SDL2-${SDL_VERSION}" -B sdl-build -DCMAKE_BUILD_TYPE=Release -DSDL_SHARED=OFF -DSDL_STATIC=ON -DSDL_TEST=OFF \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 "-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64" -DCMAKE_INSTALL_PREFIX="$PWD/sdl-prefix"
+          cmake --build sdl-build -j 4
+          cmake --install sdl-build
+
+      - name: Configure
+        run: >
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DRSMP_WARNINGS_AS_ERRORS=ON -DRSMP_STATIC_SDL2=ON
+          -DCMAKE_PREFIX_PATH="$PWD/sdl-prefix" -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 "-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64"
+
+      - name: Build
+        run: cmake --build build -j 4
+
+      - name: Install ffmpeg (needed by the tests)
+        run: brew install ffmpeg
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure --no-tests=error
+
+      - name: Check the app is self-contained
+        run: |
+          app=build/ReSkateMusicPacker.app/Contents/MacOS/ReSkateMusicPacker
+          lipo -info "$app"
+          if otool -L "$app" | tail -n +2 | grep -vE '^\s+(/System/|/usr/lib/)'; then echo "links a non-system library" && exit 1; fi
+
+      - name: Package
+        run: |
+          codesign --force --deep --sign - build/ReSkateMusicPacker.app
+          mkdir -p package/licenses
+          ditto build/ReSkateMusicPacker.app package/ReSkateMusicPacker.app
+          cp LICENSE README.md NOTICE.md package/
+          cp External/imgui/LICENSE.txt package/licenses/imgui-LICENSE.txt
+          cp External/rapidjson/LICENSE.txt package/licenses/rapidjson-LICENSE.txt
+          cp External/lz4/LICENSE package/licenses/lz4-LICENSE
+          cp External/zstd/LICENSE External/zstd/COPYING package/licenses/
+          cp External/miniz/LICENSE.txt package/licenses/miniz-LICENSE.txt
+          cp External/ooz/README.md package/licenses/ooz-README.md
+          cp External/ooz/simde/COPYING package/licenses/simde-COPYING
+          cp External/stb/README.md package/licenses/stb-README.md
+          cp "SDL2-${SDL_VERSION}/LICENSE.txt" package/licenses/SDL2-LICENSE.txt
+          ditto -c -k --keepParent package "ReSkateMusicPacker-${{ github.ref_name }}-macos-universal.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: ReSkateMusicPacker-${{ github.ref_name }}-macos-universal.zip
+
+  # Built on Ubuntu 22.04 (glibc 2.35) so it runs on most current distributions, including SteamOS.
+  linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install compilers, SDL2 and ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y g++-12 libsdl2-dev ffmpeg fonts-dejavu-core
+
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DRSMP_WARNINGS_AS_ERRORS=ON -DCMAKE_C_COMPILER=gcc-12 -DCMAKE_CXX_COMPILER=g++-12
+
+      - name: Build
+        run: cmake --build build -j 4
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure --no-tests=error
+
+      - name: Package
+        run: |
+          dir="ReSkateMusicPacker-${{ github.ref_name }}-linux-x86_64"
+          mkdir -p "$dir/licenses"
+          install -m 755 build/ReSkateMusicPacker "$dir/"
+          strip "$dir/ReSkateMusicPacker"
+          cp LICENSE README.md NOTICE.md "$dir/"
+          cp External/imgui/LICENSE.txt "$dir/licenses/imgui-LICENSE.txt"
+          cp External/rapidjson/LICENSE.txt "$dir/licenses/rapidjson-LICENSE.txt"
+          cp External/lz4/LICENSE "$dir/licenses/lz4-LICENSE"
+          cp External/zstd/LICENSE External/zstd/COPYING "$dir/licenses/"
+          cp External/miniz/LICENSE.txt "$dir/licenses/miniz-LICENSE.txt"
+          cp External/ooz/README.md "$dir/licenses/ooz-README.md"
+          cp External/ooz/simde/COPYING "$dir/licenses/simde-COPYING"
+          cp External/stb/README.md "$dir/licenses/stb-README.md"
+          tar czf "$dir.tar.gz" "$dir"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: ReSkateMusicPacker-${{ github.ref_name }}-linux-x86_64.tar.gz
+
+  publish:
+    needs: [windows, macos, linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
       - name: Publish
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            ReSkateMusicPacker-${{ github.ref_name }}-win64.zip
+          files: dist/*
+          body_path: .github/release-notes.md
           generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}

@@ -57,11 +57,17 @@ if(WIN32)
     target_compile_definitions(imgui PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
     target_link_libraries(imgui PUBLIC d3d12 dxgi d3dcompiler dwmapi)
 else()
+    # Release builds link SDL2 statically (RSMP_STATIC_SDL2=ON), so the app runs without SDL2 installed.
+    option(RSMP_STATIC_SDL2 "Link SDL2 statically (needs SDL2's static library, e.g. built from source)" OFF)
     find_package(SDL2 REQUIRED)
     target_sources(imgui PRIVATE
         External/imgui/backends/imgui_impl_sdl2.cpp
         External/imgui/backends/imgui_impl_sdlrenderer2.cpp)
-    target_link_libraries(imgui PUBLIC SDL2::SDL2)
+    if(RSMP_STATIC_SDL2)
+        target_link_libraries(imgui PUBLIC SDL2::SDL2-static)
+    else()
+        target_link_libraries(imgui PUBLIC SDL2::SDL2)
+    endif()
 endif()
 
 # 4b. ooz: the open-source Oodle decoder, for the game's CAS blocks where its DLL cannot load.
