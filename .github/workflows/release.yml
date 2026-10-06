@@ -86,7 +86,10 @@ jobs:
         run: |
           app=build/ReSkateMusicPacker.app/Contents/MacOS/ReSkateMusicPacker
           lipo -info "$app"
-          if otool -L "$app" | tail -n +2 | grep -vE '^\s+(/System/|/usr/lib/)'; then echo "links a non-system library" && exit 1; fi
+          # Library lines are indented; the unindented ones name the file and each architecture.
+          if otool -L "$app" | grep -E '^[[:space:]]' | grep -vE '^[[:space:]]+(/System/|/usr/lib/)'; then
+            echo "links a non-system library" && exit 1
+          fi
 
       - name: Package
         run: |
