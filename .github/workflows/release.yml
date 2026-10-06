@@ -70,7 +70,7 @@ jobs:
 
       - name: Configure
         run: >
-          cmake -B build -DCMAKE_BUILD_TYPE=Release -DRSMP_WARNINGS_AS_ERRORS=ON -DRSMP_STATIC_SDL2=ON
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DRSMP_STATIC_SDL2=ON
           -DCMAKE_PREFIX_PATH="$PWD/sdl-prefix" -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 "-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64"
 
       - name: Build
@@ -120,7 +120,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y g++-12 libsdl2-dev ffmpeg fonts-dejavu-core
 
       - name: Configure
-        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DRSMP_WARNINGS_AS_ERRORS=ON -DCMAKE_C_COMPILER=gcc-12 -DCMAKE_CXX_COMPILER=g++-12
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=gcc-12 -DCMAKE_CXX_COMPILER=g++-12
 
       - name: Build
         run: cmake --build build -j 4

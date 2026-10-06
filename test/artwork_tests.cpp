@@ -11,16 +11,26 @@
 #include <iterator>
 #include <vector>
 
-#pragma GCC diagnostic push // third-party: silence warnings about the parts not used
+// Third-party, compiled here as static functions: silence warnings about the parts not used.
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable: 4505 4100 4244 4456 4457 4701 4703)
+#else
+#pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wunused-function"
 #pragma GCC diagnostic ignored "-Wunused-parameter"
 #pragma GCC diagnostic ignored "-Wsign-compare"
 #pragma GCC diagnostic ignored "-Wimplicit-fallthrough"
+#endif
 #define STB_IMAGE_IMPLEMENTATION
 #define STB_IMAGE_STATIC
 #define STBI_ONLY_PNG
 #include "stb/stb_image.h"
+#ifdef _MSC_VER
+#pragma warning(pop)
+#else
 #pragma GCC diagnostic pop
+#endif
 
 namespace {
 namespace fs = std::filesystem;

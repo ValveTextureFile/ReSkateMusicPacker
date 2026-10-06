@@ -2264,8 +2264,9 @@ int run_cli(int argc, wchar_t** argv) {
 
         auto songs = music::scan(files);
         for (const auto& [id, image] : trackArtwork) {
+            const std::string& wanted = id; // Apple Clang < 16 cannot capture a structured binding
             const auto found = std::find_if(songs.begin(), songs.end(), [&](const auto& song) {
-                return song.artist + " - " + song.title == id;
+                return song.artist + " - " + song.title == wanted;
             });
             if (found == songs.end()) throw std::runtime_error("Artwork names an unknown track: " + id);
             found->artwork = image;

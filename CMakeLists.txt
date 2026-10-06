@@ -120,7 +120,9 @@ if(NOT MSVC)
 endif()
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     # GCC 12+ false positive on BinaryWriter::seek's inlined vector resize (binary_bundle.cpp).
-    target_compile_options(engine PRIVATE -Wno-array-bounds -Wno-stringop-overflow)
+    # GCC 12 also misreads std::string/vector internals in material_grid.cpp and toc.cpp.
+    target_compile_options(engine PRIVATE -Wno-array-bounds -Wno-stringop-overflow -Wno-restrict
+                                          -Wno-maybe-uninitialized -Wno-stringop-overread)
 endif()
 target_link_libraries(engine PUBLIC lz4 miniz zstd)
 if(NOT WIN32)
@@ -188,6 +190,10 @@ add_executable(ReSkateArtworkTests test/artwork_tests.cpp)
 configure_strict_target(ReSkateArtworkTests)
 target_link_libraries(ReSkateArtworkTests PRIVATE music_packer_lib)
 add_test(NAME artwork_tests COMMAND ReSkateArtworkTests "${CMAKE_BINARY_DIR}/artwork-preview.png")
+if(MSVC)
+    # stb_image's unused static functions; MSVC reports C4505 at the end of the file, past any pragma pop.
+    target_compile_options(ReSkateArtworkTests PRIVATE /wd4505)
+endif()
 
 add_executable(ReSkateFfmpegTests test/ffmpeg_fetch_tests.cpp)
 configure_strict_target(ReSkateFfmpegTests)
